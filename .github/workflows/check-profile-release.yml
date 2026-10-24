@@ -1,0 +1,75 @@
+name: Validate CodeRats profile release (private source)
+
+on:
+  push:
+    branches:
+      - "release/profile-achievements-themes-20261024"
+    paths:
+      - ".github/workflows/check-profile-release.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  validate-release:
+    if: github.repository == 'coderats-hub/coderats-deploy' && github.ref == 'refs/heads/release/profile-achievements-themes-20261024'
+    runs-on: ubuntu-latest
+    environment: dev
+    timeout-minutes: 25
+    steps:
+      - name: Check trusted release identity
+        run: |
+          test "$GITHUB_REPOSITORY" = "coderats-hub/coderats-deploy"
+          test "$GITHUB_REF" = "refs/heads/release/profile-achievements-themes-20261024"
+      - name: Short-lived read-only access to private web source
+        id: token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.CODERATS_DEPLOY_APP_ID }}
+          private-key: ${{ secrets.CODERATS_DEPLOY_APP_PRIVATE_KEY }}
+          owner: coderats-hub
+          repositories: web-coderats-base
+          permission-contents: read
+      - name: Checkout private release branch
+        uses: actions/checkout@v4
+        with:
+          repository: coderats-hub/web-coderats-base
+          ref: release/profile-achievements-themes-20261024
+          token: ${{ steps.token.outputs.token }}
+          persist-credentials: false
+          path: private-web
+      - name: Prepare Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Check frontend privately without dumping logs
+        env:
+          NEXT_PUBLIC_API_URL: ${{ vars.NEXT_PUBLIC_API_URL }}
+        run: |
+          set -euo pipefail
+          [[ "$NEXT_PUBLIC_API_URL" == https://* ]] || { echo "::error::Missing DEV API URL"; exit 1; }
+          log="$RUNNER_TEMP/profile-private-checks.log"
+          if ! (cd private-web && npm ci --no-audit --no-fund &&
+            npm test && npx tsc --noEmit &&
+            npm run build -- --webpack) >"$log" 2>&1; then
+            echo "::error::Private release checks failed: raw private logs suppressed."
+            python3 - "$log" <<'PY'
+          import pathlib,re,sys
+          s=pathlib.Path(sys.argv[1]).read_text(errors='replace')
+          lines=s.splitlines()
+          print('Private check failure categories:', {
+            'typescript_errors':sum(bool(re.search(r'error TS[0-9]+',v)) for v in lines),
+            'vitest_failures':sum(bool(re.search(r'FAIL |Test Files.*failed|Tests.*failed',v)) for v in lines),
+            'build_errors':sum(bool(re.search(r'Build failed|Failed to compile|Error occurred prerendering',v)) for v in lines),
+          })
+          for v in lines:
+            m=re.search(r'([A-Za-z0-9_./\[\]-]+\.(?:tsx?|jsx?))\((\d+),(\d+)\): error TS(\d+)',v)
+            if m:
+              print('TS diagnostic:', m.group(1).rsplit('/',1)[-1], 'line',m.group(2),'column',m.group(3),'code',m.group(4))
+          PY
+            exit 1
+          fi
+          echo "Release frontend tests, typecheck and production build passed." >> "$GITHUB_STEP_SUMMARY"
+      - name: Remove private checkout
+        if: always()
+        run: rm -rf private-web

@@ -1,0 +1,17 @@
+# Copy to .github/workflows/dev-self-hosted.yml in PRIVATE api-coderats-base.
+name: CodeRats API DEV (self-hosted)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  dev:
+    if: github.ref == 'refs/heads/develop'
+    uses: coderats-hub/coderats-deploy/.github/workflows/dev-container.yml@REPLACE_WITH_FULL_40_CHARACTER_PUBLIC_REPO_SHA
+    with:
+      service: api
+      resource_group: rg-coderats-base-dev
+      registry_name: crcoderatsbasedev9e0045
+      container_app: ca-coderats-base-api-dev
+    secrets: inherit

@@ -32,19 +32,20 @@ permissions:
   id-token: write
 
 concurrency:
-  group: coderats-central-dev-${{ github.event_name == 'push' && 'api' || github.event_name == 'schedule' && 'get-worker' || inputs.service }}
+  group: coderats-central-dev-${{ github.event_name == 'push' && github.event.head_commit.message == 'ci(dev): publish beta4 api' && 'api' || (github.event_name == 'push' || github.event_name == 'schedule') && 'get-worker' || inputs.service }}
   cancel-in-progress: false
 
 jobs:
   deploy:
-    name: Build and release ${{ github.event_name == 'push' && 'api' || github.event_name == 'schedule' && 'get-worker' || inputs.service }} (private source)
+    name: Build and release ${{ github.event_name == 'push' && github.event.head_commit.message == 'ci(dev): publish beta4 api' && 'api' || (github.event_name == 'push' || github.event_name == 'schedule') && 'get-worker' || inputs.service }} (private source)
     if: >-
       github.repository == 'coderats-hub/coderats-deploy' &&
       github.ref == 'refs/heads/main' &&
       (github.event_name == 'workflow_dispatch' ||
        github.event_name == 'schedule' ||
        (github.event_name == 'push' &&
-        github.event.head_commit.message == 'ci(dev): publish beta4 api'))
+        (github.event.head_commit.message == 'ci(dev): publish beta4 api' ||
+          github.event.head_commit.message == 'ci(dev): verify GET worker')))
     environment: dev
     # The CodeRats deployment tooling lives in this public repository.
     # Only trusted manual releases from protected main / environment dev may
@@ -53,7 +54,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 70
     env:
-      DEPLOY_SERVICE: ${{ github.event_name == 'push' && 'api' || github.event_name == 'schedule' && 'get-worker' || inputs.service }}
+      DEPLOY_SERVICE: ${{ github.event_name == 'push' && github.event.head_commit.message == 'ci(dev): publish beta4 api' && 'api' || (github.event_name == 'push' || github.event_name == 'schedule') && 'get-worker' || inputs.service }}
     defaults:
       run:
         shell: bash
@@ -291,8 +292,28 @@ jobs:
             echo "Existing GET DEV batch active; skipped duplicate" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
-          az containerapp job start -g "$rg" -n "$job" --output none
-          echo "GET DEV batch started with immutable API digest." >> "$GITHUB_STEP_SUMMARY"
+          execution="$(az containerapp job start -g "$rg" -n "$job" --query name -o tsv)"
+          [[ "$execution" =~ ^[a-z0-9-]{4,80}$ ]] || {
+            echo "::error::GET job did not return a valid execution name"; exit 1;
+          }
+          echo "GET DEV execution started with immutable API digest." >> "$GITHUB_STEP_SUMMARY"
+          # Container Apps job start only acknowledges dispatch; it does not
+          # prove the worker actually ran successfully. Check terminal state.
+          for i in $(seq 1 145); do
+            state="$(az containerapp job execution show -g "$rg" -n "$job" \
+              --job-execution-name "$execution" --query properties.status -o tsv 2>/dev/null || true)"
+            case "$state" in
+              Succeeded)
+                echo "GET DEV execution succeeded." >> "$GITHUB_STEP_SUMMARY"
+                exit 0 ;;
+              Failed|Stopped|Canceled|Cancelled)
+                echo "::error::GET DEV worker execution did not succeed ($state)"
+                exit 1 ;;
+            esac
+            sleep 10
+          done
+          echo "::error::GET DEV worker execution timed out without a confirmed terminal state"
+          exit 1
 
       - name: Remove cloned private sources and logout
         if: always()

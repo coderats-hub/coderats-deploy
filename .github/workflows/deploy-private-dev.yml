@@ -277,7 +277,7 @@ jobs:
             GET_WORKER_MAX_EVENTS=100 GET_WORKER_MAX_RUN_SECONDS=1200 \
             GET_BETA_ENABLED=true GET_BETA_ENVIRONMENT=dev \
             GET_BETA_ALLOWED_REPOSITORY_OWNER=coderats-hub GET_BETA_ALLOW_LEGACY_OAUTH=true \
-            GET_BETA_POLICY_RELEASE=beta3-traces --output none
+            GET_BETA_POLICY_RELEASE=beta4-proficiency-quality --output none
           active="$(az containerapp job execution list -g "$rg" -n "$job" --query '[].properties.status' -o tsv)"
           if printf '%s\n' "$active" | grep -Eiq '^(Running|Pending|Processing)$'; then
             echo "Existing GET DEV batch active; skipped duplicate" >> "$GITHUB_STEP_SUMMARY"

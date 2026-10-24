@@ -163,6 +163,13 @@ jobs:
               'build_goal_failures': sum('Failed to execute goal' in x for x in errors),
           }
           print('Maven failure categories:', kinds)
+          for l in errors:
+              if 'Tests run:' in l:
+                  test = re.search(r'(?:-- in |- in )([A-Za-z0-9_.$]+)', l)
+                  if test:
+                      counts = re.search(r'Tests run: (\\d+), Failures: (\\d+), Errors: (\\d+)', l)
+                      if counts:
+                          print('Test class:',test.group(1),'runs/failures/errors:',*counts.groups())
           for l in errors[:30]:
               if re.search(r'\.java:\[\d+,\d+\]',l):
                   match = re.search(r'([A-Za-z0-9_]+\.java):\[(\d+),(\d+)\]',l)

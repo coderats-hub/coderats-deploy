@@ -3,6 +3,12 @@ name: Deploy CodeRats private services to DEV
 # This repository is the actual workflow owner and dispatcher.
 # No workflow is called from a private repository.
 on:
+  # One-time diagnostic dispatch because the connected GitHub integration
+  # cannot invoke workflow_dispatch directly. Removed after test.
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/deploy-private-dev.yml"
   workflow_dispatch:
     inputs:
       service:
@@ -23,13 +29,18 @@ permissions:
   id-token: write
 
 concurrency:
-  group: coderats-central-dev-${{ inputs.service }}
+  group: coderats-central-dev-${{ github.event_name == 'push' && 'web' || inputs.service }}
   cancel-in-progress: false
 
 jobs:
   deploy:
-    name: Build and release ${{ inputs.service }} (private source)
-    if: github.repository == 'coderats-hub/coderats-deploy' && github.ref == 'refs/heads/main'
+    name: Build and release ${{ github.event_name == 'push' && 'web' || inputs.service }} (private source)
+    if: >-
+      github.repository == 'coderats-hub/coderats-deploy' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'push' &&
+        github.event.head_commit.message == 'ci(dev): perform one-time web DEV smoke release'))
     environment: dev
     # The CodeRats deployment tooling lives in this public repository.
     # Only trusted manual releases from protected main / environment dev may
@@ -37,6 +48,8 @@ jobs:
     # GitHub's public-repository runner usage policy still applies.
     runs-on: ubuntu-latest
     timeout-minutes: 70
+    env:
+      DEPLOY_SERVICE: ${{ github.event_name == 'push' && 'web' || inputs.service }}
     defaults:
       run:
         shell: bash
@@ -44,8 +57,8 @@ jobs:
       - name: Validate intent and constrain private checkout
         id: target
         env:
-          SERVICE: ${{ inputs.service }}
-          CONFIRMATION: ${{ inputs.confirmation }}
+          SERVICE: ${{ env.DEPLOY_SERVICE }}
+          CONFIRMATION: ${{ github.event_name == 'push' && 'DEPLOY_DEV' || inputs.confirmation }}
         run: |
           set -euo pipefail
           [[ "$CONFIRMATION" == "DEPLOY_DEV" ]] || {
@@ -103,13 +116,13 @@ jobs:
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
       - name: Prepare Node 24 for private web checks
-        if: inputs.service == 'web'
+        if: env.DEPLOY_SERVICE == 'web'
         uses: actions/setup-node@v4
         with:
           node-version: '24'
 
       - name: Test and typecheck private frontend without publishing its logs
-        if: inputs.service == 'web'
+        if: env.DEPLOY_SERVICE == 'web'
         working-directory: app-src
         env:
           NEXT_PUBLIC_API_URL: ${{ vars.NEXT_PUBLIC_API_URL }}
@@ -124,14 +137,14 @@ jobs:
           echo "Private frontend validation passed."
 
       - name: Prepare Java 21 for private API checks
-        if: inputs.service == 'api'
+        if: env.DEPLOY_SERVICE == 'api'
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '21'
 
       - name: Verify private API without publishing test output
-        if: inputs.service == 'api'
+        if: env.DEPLOY_SERVICE == 'api'
         working-directory: app-src
         run: |
           set -euo pipefail
@@ -159,9 +172,9 @@ jobs:
           [[ "$(az acr show -n crcoderatsbasedev9e0045 -g rg-coderats-base-dev --query loginServer -o tsv)" == "crcoderatsbasedev9e0045.azurecr.io" ]] || exit 1
 
       - name: Build private image and publish DEV container revision
-        if: inputs.service == 'web' || inputs.service == 'api'
+        if: env.DEPLOY_SERVICE == 'web' || inputs.service == 'api'
         env:
-          SERVICE: ${{ inputs.service }}
+          SERVICE: ${{ env.DEPLOY_SERVICE }}
           SOURCE_SHA: ${{ steps.source.outputs.sha }}
           WEB_APP: ${{ vars.AZURE_WEB_CONTAINER_APP }}
           API_ORIGIN: ${{ vars.NEXT_PUBLIC_API_URL }}
@@ -212,7 +225,7 @@ jobs:
           exit 1
 
       - name: Refresh and run isolated GET DEV worker with pinned API digest
-        if: inputs.service == 'get-worker'
+        if: env.DEPLOY_SERVICE == 'get-worker'
         run: |
           set -euo pipefail
           rg=rg-coderats-base-dev

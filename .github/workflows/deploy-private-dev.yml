@@ -32,12 +32,12 @@ permissions:
   id-token: write
 
 concurrency:
-  group: coderats-central-dev-${{ github.event_name == 'push' && github.event.head_commit.message == 'ci(dev): publish beta4 api' && 'api' || (github.event_name == 'push' || github.event_name == 'schedule') && 'get-worker' || inputs.service }}
+  group: "coderats-central-dev-${{ github.event_name == 'push' && github.event.head_commit.message == 'ci(dev): publish beta4 api' && 'api' || (github.event_name == 'push' || github.event_name == 'schedule') && 'get-worker' || inputs.service }}"
   cancel-in-progress: false
 
 jobs:
   deploy:
-    name: Build and release ${{ github.event_name == 'push' && github.event.head_commit.message == 'ci(dev): publish beta4 api' && 'api' || (github.event_name == 'push' || github.event_name == 'schedule') && 'get-worker' || inputs.service }} (private source)
+    name: "Build and release ${{ github.event_name == 'push' && github.event.head_commit.message == 'ci(dev): publish beta4 api' && 'api' || (github.event_name == 'push' || github.event_name == 'schedule') && 'get-worker' || inputs.service }} (private source)"
     if: >-
       github.repository == 'coderats-hub/coderats-deploy' &&
       github.ref == 'refs/heads/main' &&
@@ -54,7 +54,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 70
     env:
-      DEPLOY_SERVICE: ${{ github.event_name == 'push' && github.event.head_commit.message == 'ci(dev): publish beta4 api' && 'api' || (github.event_name == 'push' || github.event_name == 'schedule') && 'get-worker' || inputs.service }}
+      DEPLOY_SERVICE: "${{ github.event_name == 'push' && github.event.head_commit.message == 'ci(dev): publish beta4 api' && 'api' || (github.event_name == 'push' || github.event_name == 'schedule') && 'get-worker' || inputs.service }}"
     defaults:
       run:
         shell: bash

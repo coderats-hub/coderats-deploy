@@ -1,0 +1,239 @@
+name: Deploy CodeRats private services to DEV
+
+# This repository is the actual workflow owner and dispatcher.
+# No workflow is called from a private repository.
+on:
+  workflow_dispatch:
+    inputs:
+      service:
+        description: Select the private CodeRats service
+        required: true
+        type: choice
+        options:
+          - web
+          - api
+          - get-worker
+      confirmation:
+        description: Type DEPLOY_DEV to authorize this release
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: coderats-central-dev-${{ inputs.service }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Build and release ${{ inputs.service }} (private source)
+    if: github.repository == 'coderats-hub/coderats-deploy' && github.ref == 'refs/heads/main'
+    environment: dev
+    # Never run private builds on public GitHub-hosted minutes.
+    # A dedicated ephemeral runner must be explicitly allowed for ONLY
+    # this main-branch, manually dispatched, protected environment job.
+    runs-on: [self-hosted, linux, x64, coderats-public-deploy]
+    timeout-minutes: 70
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Validate intent and constrain private checkout
+        id: target
+        env:
+          SERVICE: ${{ inputs.service }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+        run: |
+          set -euo pipefail
+          [[ "$CONFIRMATION" == "DEPLOY_DEV" ]] || {
+            echo "::error::Confirmation must be DEPLOY_DEV"; exit 1;
+          }
+          case "$SERVICE" in
+            web)        repo=web-coderats-base; branch=develop ;;
+            api)        repo=api-coderats-base; branch=develop ;;
+            get-worker) repo=coderats-base-infra; branch=main ;;
+            *) echo "::error::Invalid service"; exit 1 ;;
+          esac
+          echo "repo_name=$repo" >> "$GITHUB_OUTPUT"
+          echo "repo=coderats-hub/$repo" >> "$GITHUB_OUTPUT"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+
+      - name: Issue short-lived GitHub App token for exactly one private repo
+        id: private-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.CODERATS_DEPLOY_APP_ID }}
+          private-key: ${{ secrets.CODERATS_DEPLOY_APP_PRIVATE_KEY }}
+          owner: coderats-hub
+          repositories: ${{ steps.target.outputs.repo_name }}
+          permission-contents: read
+
+      - name: Checkout the PRIVATE source from its trusted branch
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.target.outputs.repo }}
+          ref: ${{ steps.target.outputs.branch }}
+          token: ${{ steps.private-token.outputs.token }}
+          persist-credentials: false
+          fetch-depth: 1
+          path: app-src
+
+      - name: Record the private source SHA for reproducible image tag
+        id: source
+        run: |
+          set -euo pipefail
+          sha="$(git -C app-src rev-parse HEAD)"
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare Node 24 for private web checks
+        if: inputs.service == 'web'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Test and typecheck private frontend without publishing its logs
+        if: inputs.service == 'web'
+        working-directory: app-src
+        env:
+          NEXT_PUBLIC_API_URL: ${{ vars.NEXT_PUBLIC_API_URL }}
+        run: |
+          set -euo pipefail
+          [[ "$NEXT_PUBLIC_API_URL" == https://* ]] || { echo "::error::Missing valid DEV API origin"; exit 1; }
+          runlog="${RUNNER_TEMP}/coderats-web-checks.log"
+          if ! (npm ci --no-audit --no-fund && npm test && npx tsc --noEmit && npm run build -- --webpack) >"$runlog" 2>&1; then
+            echo "::error::Private web validation failed. Review the local runner log, not the public Actions log."
+            exit 1
+          fi
+          echo "Private frontend validation passed."
+
+      - name: Prepare Java 21 for private API checks
+        if: inputs.service == 'api'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Verify private API without publishing test output
+        if: inputs.service == 'api'
+        working-directory: app-src
+        run: |
+          set -euo pipefail
+          runlog="${RUNNER_TEMP}/coderats-api-checks.log"
+          if ! (chmod +x mvnw && ./mvnw --batch-mode verify) >"$runlog" 2>&1; then
+            echo "::error::Private Java verification failed. Review the local runner log."
+            exit 1
+          fi
+          echo "Private API tests passed."
+
+      - name: Login Azure using public deploy repository DEV OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Confirm DEV Azure scope
+        env:
+          EXPECTED_SUBSCRIPTION: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          set -euo pipefail
+          [[ "$(az account show --query id -o tsv)" == "$EXPECTED_SUBSCRIPTION" ]] || exit 1
+          az group show --name rg-coderats-base-dev --query name -o tsv >/dev/null
+          [[ "$(az acr show -n crcoderatsbasedev9e0045 -g rg-coderats-base-dev --query loginServer -o tsv)" == "crcoderatsbasedev9e0045.azurecr.io" ]] || exit 1
+
+      - name: Build private image and publish DEV container revision
+        if: inputs.service == 'web' || inputs.service == 'api'
+        env:
+          SERVICE: ${{ inputs.service }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+          WEB_APP: ${{ vars.AZURE_WEB_CONTAINER_APP }}
+          API_ORIGIN: ${{ vars.NEXT_PUBLIC_API_URL }}
+        run: |
+          set -euo pipefail
+          rg=rg-coderats-base-dev
+          registry=crcoderatsbasedev9e0045
+          if [[ "$SERVICE" == "web" ]]; then
+            [[ "$WEB_APP" =~ ^[a-z0-9-]+-dev$ ]] || { echo "::error::Missing DEV web Container App"; exit 1; }
+            [[ "$WEB_APP" == *web* ]] || { echo "::error::DEV web app name must contain web"; exit 1; }
+            [[ "$API_ORIGIN" == https://* ]] || exit 1
+            app="$WEB_APP"; image_repo=web-coderats-base; endpoint=/health
+          else
+            app=ca-coderats-base-api-dev; image_repo=api-coderats-base; endpoint=/actuator/health
+          fi
+          az containerapp show -g "$rg" -n "$app" --query name -o tsv >/dev/null
+          image="$registry.azurecr.io/$image_repo:$SOURCE_SHA-$GITHUB_RUN_ID"
+          az acr login -n "$registry" --output none
+          runlog="${RUNNER_TEMP}/coderats-image-build.log"
+          if [[ "$SERVICE" == "web" ]]; then
+            if ! docker build -f app-src/Dockerfile --build-arg "NEXT_PUBLIC_API_URL=$API_ORIGIN" -t "$image" app-src >"$runlog" 2>&1; then
+              echo "::error::Private web Docker build failed; inspect local runner log."; exit 1
+            fi
+          else
+            if ! docker build -f app-src/Dockerfile -t "$image" app-src >"$runlog" 2>&1; then
+              echo "::error::Private API Docker build failed; inspect local runner log."; exit 1
+            fi
+          fi
+          docker push "$image" >"$runlog" 2>&1 || {
+            echo "::error::Failed to push image to DEV ACR"; exit 1;
+          }
+          az containerapp update -g "$rg" -n "$app" --image "$image" --output none
+          fqdn="$(az containerapp show -g "$rg" -n "$app" --query properties.configuration.ingress.fqdn -o tsv)"
+          [[ "$fqdn" =~ ^[a-zA-Z0-9.-]+$ ]] || exit 1
+          for i in $(seq 1 30); do
+            actual="$(az containerapp show -g "$rg" -n "$app" --query properties.template.containers[0].image -o tsv)"
+            latest="$(az containerapp show -g "$rg" -n "$app" --query properties.latestRevisionName -o tsv)"
+            ready="$(az containerapp show -g "$rg" -n "$app" --query properties.latestReadyRevisionName -o tsv)"
+            if [[ "$actual" == "$image" && -n "$latest" && "$latest" == "$ready" ]] &&
+               curl --fail --silent --show-error --max-time 10 "https://$fqdn$endpoint" >/dev/null 2>&1; then
+              echo "DEV ready: $SERVICE revision=$ready" >> "$GITHUB_STEP_SUMMARY"
+              echo "Private commit deployed: $SOURCE_SHA" >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::DEV Container App revision is not healthy; inspect and roll back if needed"
+          exit 1
+
+      - name: Refresh and run isolated GET DEV worker with pinned API digest
+        if: inputs.service == 'get-worker'
+        run: |
+          set -euo pipefail
+          rg=rg-coderats-base-dev
+          registry=crcoderatsbasedev9e0045
+          api=ca-coderats-base-api-dev
+          job=caj-coderats-base-get-dev
+          image="$(az containerapp show -g "$rg" -n "$api" --query properties.template.containers[0].image -o tsv)"
+          [[ "$image" == "$registry.azurecr.io/api-coderats-base:"* ||
+             "$image" == "$registry.azurecr.io/api-coderats-base@sha256:"* ]] || exit 1
+          if [[ "$image" == *@sha256:* ]]; then
+            digest="${image##*@}"
+          else
+            manifest="${image#"$registry.azurecr.io/"}"
+            digest="$(az acr manifest show-metadata -r "$registry" -n "$manifest" --query digest -o tsv)"
+          fi
+          [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]] || exit 1
+          immutable="$registry.azurecr.io/api-coderats-base@$digest"
+          az containerapp job show -g "$rg" -n "$job" --query name -o tsv >/dev/null
+          az containerapp job update -g "$rg" -n "$job" --container-name get-worker --image "$immutable" \
+            --set-env-vars APP_RUNTIME_MODE=worker SPRING_PROFILES_ACTIVE=get-worker \
+            GET_WORKER_ENABLED=true GET_BACKFILL_ENABLED=false GET_WORKER_RUN_ONCE=true \
+            GET_WORKER_MAX_EVENTS=100 GET_WORKER_MAX_RUN_SECONDS=1200 \
+            GET_BETA_ENABLED=true GET_BETA_ENVIRONMENT=dev \
+            GET_BETA_ALLOWED_REPOSITORY_OWNER=coderats-hub GET_BETA_ALLOW_LEGACY_OAUTH=true \
+            GET_BETA_POLICY_RELEASE=beta3-traces --output none
+          active="$(az containerapp job execution list -g "$rg" -n "$job" --query '[].properties.status' -o tsv)"
+          if printf '%s\n' "$active" | grep -Eiq '^(Running|Pending|Processing)$'; then
+            echo "Existing GET DEV batch active; skipped duplicate" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          az containerapp job start -g "$rg" -n "$job" --output none
+          echo "GET DEV batch started with immutable API digest." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove cloned private sources and logout
+        if: always()
+        run: |
+          rm -rf app-src || true
+          az logout >/dev/null 2>&1 || true

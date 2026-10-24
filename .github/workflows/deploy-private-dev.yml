@@ -251,8 +251,8 @@ jobs:
           echo "::error::DEV Container App revision is not healthy; inspect and roll back if needed"
           exit 1
 
-      - name: Refresh and run isolated GET DEV worker with pinned API digest
-        if: env.DEPLOY_SERVICE == 'get-worker'
+      - name: Refresh and run isolated GET DEV worker after API release
+        if: env.DEPLOY_SERVICE == 'get-worker' || env.DEPLOY_SERVICE == 'api'
         run: |
           set -euo pipefail
           rg=rg-coderats-base-dev

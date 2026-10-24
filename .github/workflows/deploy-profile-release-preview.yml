@@ -1,0 +1,140 @@
+name: Deploy profile release preview to DEV
+
+# Isolated, single-source release without touching develop.
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/deploy-profile-release-preview.yml"
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: coderats-central-dev-web
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Release profile frontend to DEV
+    if: >-
+      github.repository == 'coderats-hub/coderats-deploy' &&
+      github.ref == 'refs/heads/main' &&
+      github.event_name == 'push' &&
+      github.event.head_commit.message == 'ci(dev): deploy profile release source'
+    runs-on: ubuntu-latest
+    environment: dev
+    timeout-minutes: 70
+    steps:
+      - name: Check expected protected scope
+        env:
+          GITHUB_APP_ID: ${{ vars.CODERATS_DEPLOY_APP_ID }}
+          GITHUB_APP_KEY: ${{ secrets.CODERATS_DEPLOY_APP_PRIVATE_KEY }}
+          CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          APP: ${{ vars.AZURE_WEB_CONTAINER_APP }}
+          API_ORIGIN: ${{ vars.NEXT_PUBLIC_API_URL }}
+        run: |
+          set -euo pipefail
+          for key in GITHUB_APP_ID GITHUB_APP_KEY CLIENT_ID TENANT_ID SUBSCRIPTION_ID APP API_ORIGIN; do
+            [[ -n "${!key}" ]] || { echo "::error::Missing required protected DEV configuration: $key"; exit 1; }
+          done
+          [[ "$APP" =~ ^[a-z0-9-]+-dev$ && "$APP" == *web* ]] || exit 1
+          [[ "$API_ORIGIN" == https://* ]] || exit 1
+      - name: Issue read-only token for private frontend only
+        id: access
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.CODERATS_DEPLOY_APP_ID }}
+          private-key: ${{ secrets.CODERATS_DEPLOY_APP_PRIVATE_KEY }}
+          owner: coderats-hub
+          repositories: web-coderats-base
+          permission-contents: read
+      - name: Checkout exact tested frontend release SHA
+        uses: actions/checkout@v4
+        with:
+          repository: coderats-hub/web-coderats-base
+          ref: 9913a6e2b2d780ed212fa618deaedc228ed8466e
+          token: ${{ steps.access.outputs.token }}
+          persist-credentials: false
+          fetch-depth: 1
+          path: app-src
+      - name: Confirm private source commit
+        run: |
+          set -euo pipefail
+          test "$(git -C app-src rev-parse HEAD)" = 9913a6e2b2d780ed212fa618deaedc228ed8466e
+      - name: Prepare Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Test private frontend without leaking its output
+        working-directory: app-src
+        env:
+          NEXT_PUBLIC_API_URL: ${{ vars.NEXT_PUBLIC_API_URL }}
+        run: |
+          set -euo pipefail
+          log="$RUNNER_TEMP/private-release-checks.log"
+          if ! (npm ci --no-audit --no-fund && npm test &&
+            npx tsc --noEmit && npm run build -- --webpack) >"$log" 2>&1; then
+            echo "::error::Profile release validation failed. Private logs suppressed."
+            exit 1
+          fi
+          echo "Private release tests, types and build passed." >> "$GITHUB_STEP_SUMMARY"
+      - name: Azure login on public deployment owner
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Build pinned release image and publish to DEV
+        env:
+          EXPECTED_SUBSCRIPTION: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          WEB_APP: ${{ vars.AZURE_WEB_CONTAINER_APP }}
+          API_ORIGIN: ${{ vars.NEXT_PUBLIC_API_URL }}
+        run: |
+          set -euo pipefail
+          rg=rg-coderats-base-dev
+          registry=crcoderatsbasedev9e0045
+          [[ "$(az account show --query id -o tsv)" == "$EXPECTED_SUBSCRIPTION" ]] || exit 1
+          [[ "$(az group show -n "$rg" --query name -o tsv)" == "$rg" ]] || exit 1
+          [[ "$(az acr show -n "$registry" -g "$rg" --query loginServer -o tsv)" == "$registry.azurecr.io" ]] || exit 1
+          [[ "$WEB_APP" =~ ^[a-z0-9-]+-dev$ && "$WEB_APP" == *web* ]] || exit 1
+          az containerapp show -g "$rg" -n "$WEB_APP" --query name -o tsv >/dev/null
+          image="$registry.azurecr.io/web-coderats-base:9913a6e2b2d780ed212fa618deaedc228ed8466e-$GITHUB_RUN_ID"
+          az acr login -n "$registry" --output none
+          log="$RUNNER_TEMP/private-release-docker.log"
+          if ! docker build -f app-src/Dockerfile --build-arg "NEXT_PUBLIC_API_URL=$API_ORIGIN" -t "$image" app-src >"$log" 2>&1; then
+            echo "::error::Private frontend Docker build failed. Private logs suppressed."
+            exit 1
+          fi
+          if ! docker push "$image" >"$log" 2>&1; then
+            echo "::error::Image push to restricted DEV ACR failed."
+            exit 1
+          fi
+          az containerapp update -g "$rg" -n "$WEB_APP" --image "$image" --output none
+          fqdn="$(az containerapp show -g "$rg" -n "$WEB_APP" --query properties.configuration.ingress.fqdn -o tsv)"
+          [[ "$fqdn" =~ ^[A-Za-z0-9.-]+$ ]] || exit 1
+          for i in $(seq 1 30); do
+            current="$(az containerapp show -g "$rg" -n "$WEB_APP" --query properties.template.containers[0].image -o tsv)"
+            latest="$(az containerapp show -g "$rg" -n "$WEB_APP" --query properties.latestRevisionName -o tsv)"
+            ready="$(az containerapp show -g "$rg" -n "$WEB_APP" --query properties.latestReadyRevisionName -o tsv)"
+            if [[ "$current" == "$image" && -n "$latest" && "$latest" == "$ready" ]] &&
+               curl --fail --silent --show-error --max-time 12 "https://$fqdn/health" >/dev/null 2>&1; then
+              echo "## Frontend release publicado em DEV" >> "$GITHUB_STEP_SUMMARY"
+              echo "Branch: \`release/profile-achievements-themes-20261024\` (sem merge)" >> "$GITHUB_STEP_SUMMARY"
+              echo "Commit: \`9913a6e2b2d780ed212fa618deaedc228ed8466e\`" >> "$GITHUB_STEP_SUMMARY"
+              echo "Revisão Azure: \`$ready\`" >> "$GITHUB_STEP_SUMMARY"
+              echo "Ver perfil: https://$fqdn/app/profile" >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::Released frontend did not reach healthy ready revision"
+          exit 1
+      - name: Remove checked-out private source and logout
+        if: always()
+        run: |
+          rm -rf app-src || true
+          az logout >/dev/null 2>&1 || true

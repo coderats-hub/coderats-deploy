@@ -32,12 +32,12 @@ permissions:
   id-token: write
 
 concurrency:
-  group: "coderats-central-dev-${{ github.event_name == 'push' && github.event.head_commit.message == 'ci(dev): publish beta4 api' && 'api' || (github.event_name == 'push' || github.event_name == 'schedule') && 'get-worker' || inputs.service }}"
+  group: "coderats-central-dev-${{ github.event_name == 'push' && github.event.head_commit.message == 'ci(dev): publish profile release preview' && 'web' || github.event_name == 'push' && github.event.head_commit.message == 'ci(dev): publish beta4 api' && 'api' || (github.event_name == 'push' || github.event_name == 'schedule') && 'get-worker' || inputs.service }}"
   cancel-in-progress: false
 
 jobs:
   deploy:
-    name: "Build and release ${{ github.event_name == 'push' && github.event.head_commit.message == 'ci(dev): publish beta4 api' && 'api' || (github.event_name == 'push' || github.event_name == 'schedule') && 'get-worker' || inputs.service }} (private source)"
+    name: "Build and release ${{ github.event_name == 'push' && github.event.head_commit.message == 'ci(dev): publish profile release preview' && 'web' || github.event_name == 'push' && github.event.head_commit.message == 'ci(dev): publish beta4 api' && 'api' || (github.event_name == 'push' || github.event_name == 'schedule') && 'get-worker' || inputs.service }} (private source)"
     if: >-
       github.repository == 'coderats-hub/coderats-deploy' &&
       github.ref == 'refs/heads/main' &&
@@ -45,7 +45,8 @@ jobs:
        github.event_name == 'schedule' ||
        (github.event_name == 'push' &&
         (github.event.head_commit.message == 'ci(dev): publish beta4 api' ||
-          github.event.head_commit.message == 'ci(dev): verify GET worker')))
+          (github.event.head_commit.message == 'ci(dev): verify GET worker' ||
+           github.event.head_commit.message == 'ci(dev): publish profile release preview')))
     environment: dev
     # The CodeRats deployment tooling lives in this public repository.
     # Only trusted manual releases from protected main / environment dev may
@@ -54,7 +55,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 70
     env:
-      DEPLOY_SERVICE: "${{ github.event_name == 'push' && github.event.head_commit.message == 'ci(dev): publish beta4 api' && 'api' || (github.event_name == 'push' || github.event_name == 'schedule') && 'get-worker' || inputs.service }}"
+      DEPLOY_SERVICE: "${{ github.event_name == 'push' && github.event.head_commit.message == 'ci(dev): publish profile release preview' && 'web' || github.event_name == 'push' && github.event.head_commit.message == 'ci(dev): publish beta4 api' && 'api' || (github.event_name == 'push' || github.event_name == 'schedule') && 'get-worker' || inputs.service }}"
     defaults:
       run:
         shell: bash
@@ -63,6 +64,7 @@ jobs:
         id: target
         env:
           SERVICE: ${{ env.DEPLOY_SERVICE }}
+          RELEASE_PREVIEW: ${{ github.event_name == 'push' && github.event.head_commit.message == 'ci(dev): publish profile release preview' }}
           CONFIRMATION: ${{ (github.event_name == 'push' || github.event_name == 'schedule') && 'DEPLOY_DEV' || inputs.confirmation }}
         run: |
           set -euo pipefail
@@ -70,7 +72,14 @@ jobs:
             echo "::error::Confirmation must be DEPLOY_DEV"; exit 1;
           }
           case "$SERVICE" in
-            web)        repo=web-coderats-base; branch=develop ;;
+            web)
+              repo=web-coderats-base
+              if [[ "$RELEASE_PREVIEW" == "true" ]]; then
+                branch=9913a6e2b2d780ed212fa618deaedc228ed8466e
+              else
+                branch=develop
+              fi
+              ;;
             api)        repo=api-coderats-base; branch=develop ;;
             get-worker) repo=coderats-base-infra; branch=main ;;
             *) echo "::error::Invalid service"; exit 1 ;;
@@ -117,10 +126,17 @@ jobs:
       - name: Record the private source SHA for reproducible image tag
         id: source
         if: env.DEPLOY_SERVICE != 'get-worker'
+        env:
+          RELEASE_PREVIEW: ${{ github.event_name == 'push' && github.event.head_commit.message == 'ci(dev): publish profile release preview' }}
         run: |
           set -euo pipefail
           sha="$(git -C app-src rev-parse HEAD)"
           [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          if [[ "$RELEASE_PREVIEW" == "true" ]]; then
+            [[ "$sha" == "9913a6e2b2d780ed212fa618deaedc228ed8466e" ]] || {
+              echo "::error::Release preview source SHA does not match the tested commit"; exit 1;
+            }
+          fi
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
       - name: Prepare Node 24 for private web checks

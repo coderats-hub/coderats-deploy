@@ -31,10 +31,11 @@ jobs:
     name: Build and release ${{ inputs.service }} (private source)
     if: github.repository == 'coderats-hub/coderats-deploy' && github.ref == 'refs/heads/main'
     environment: dev
-    # Never run private builds on public GitHub-hosted minutes.
-    # A dedicated ephemeral runner must be explicitly allowed for ONLY
-    # this main-branch, manually dispatched, protected environment job.
-    runs-on: [self-hosted, linux, x64, coderats-public-deploy]
+    # The CodeRats deployment tooling lives in this public repository.
+    # Only trusted manual releases from protected main / environment dev may
+    # build the related CodeRats applications; never accept untrusted refs.
+    # GitHub's public-repository runner usage policy still applies.
+    runs-on: ubuntu-latest
     timeout-minutes: 70
     defaults:
       run:
@@ -59,6 +60,19 @@ jobs:
           echo "repo_name=$repo" >> "$GITHUB_OUTPUT"
           echo "repo=coderats-hub/$repo" >> "$GITHUB_OUTPUT"
           echo "branch=$branch" >> "$GITHUB_OUTPUT"
+
+      - name: Check required protected DEV credentials before private checkout
+        env:
+          GITHUB_APP_ID: ${{ vars.CODERATS_DEPLOY_APP_ID }}
+          GITHUB_APP_KEY: ${{ secrets.CODERATS_DEPLOY_APP_PRIVATE_KEY }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          set -euo pipefail
+          for key in GITHUB_APP_ID GITHUB_APP_KEY AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID; do
+            [[ -n "${!key}" ]] || { echo "::error::Missing DEV environment configuration: $key"; exit 1; }
+          done
 
       - name: Issue short-lived GitHub App token for exactly one private repo
         id: private-token

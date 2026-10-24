@@ -3,6 +3,11 @@ name: Deploy CodeRats private services to DEV
 # This repository is the actual workflow owner and dispatcher.
 # No workflow is called from a private repository.
 on:
+  # Explicitly authorized one-time beta4 API release (commit-message gated).
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/deploy-private-dev.yml"
   workflow_dispatch:
     inputs:
       service:
@@ -23,13 +28,18 @@ permissions:
   id-token: write
 
 concurrency:
-  group: coderats-central-dev-${{ inputs.service }}
+  group: coderats-central-dev-${{ github.event_name == 'push' && 'api' || inputs.service }}
   cancel-in-progress: false
 
 jobs:
   deploy:
-    name: Build and release ${{ inputs.service }} (private source)
-    if: github.repository == 'coderats-hub/coderats-deploy' && github.ref == 'refs/heads/main'
+    name: Build and release ${{ github.event_name == 'push' && 'api' || inputs.service }} (private source)
+    if: >-
+      github.repository == 'coderats-hub/coderats-deploy' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'push' &&
+        github.event.head_commit.message == 'ci(dev): publish beta4 api'))
     environment: dev
     # The CodeRats deployment tooling lives in this public repository.
     # Only trusted manual releases from protected main / environment dev may
@@ -38,7 +48,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 70
     env:
-      DEPLOY_SERVICE: ${{ inputs.service }}
+      DEPLOY_SERVICE: ${{ github.event_name == 'push' && 'api' || inputs.service }}
     defaults:
       run:
         shell: bash
@@ -47,7 +57,7 @@ jobs:
         id: target
         env:
           SERVICE: ${{ env.DEPLOY_SERVICE }}
-          CONFIRMATION: ${{ inputs.confirmation }}
+          CONFIRMATION: ${{ github.event_name == 'push' && 'DEPLOY_DEV' || inputs.confirmation }}
         run: |
           set -euo pipefail
           [[ "$CONFIRMATION" == "DEPLOY_DEV" ]] || {

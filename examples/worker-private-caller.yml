@@ -1,0 +1,12 @@
+# Copy to .github/workflows/dev-self-hosted.yml in PRIVATE coderats-base-infra.
+name: CodeRats GET DEV (self-hosted)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  dev:
+    if: github.ref == 'refs/heads/main'
+    uses: coderats-hub/coderats-deploy/.github/workflows/dev-get-worker.yml@REPLACE_WITH_FULL_40_CHARACTER_PUBLIC_REPO_SHA
+    secrets: inherit

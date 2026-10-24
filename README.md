@@ -1,45 +1,107 @@
-# CodeRats Deploy — public workflow templates
+# CodeRats Deploy — central CI/CD repository
 
-Public **templates only** for CodeRats DEV builds and deployments. Application sources remain in the three private repositories, and authentication stays with their respective private caller workflows.
+**This public repository owns and executes DEV deployments.** The private CodeRats
+application repositories are **source checkouts**, never workflow callers.
 
-> **No public-runner billing bypass:** The public repo's GitHub-hosted runner validates **only these public templates**. Builds of private application code happen only in the private caller repository on its approved, private **self-hosted runner**. The public repo has no private GitHub App keys, PATs, Azure secrets, private application source, or access to the private repositories.
+[Run the central DEV deployment](https://github.com/coderats-hub/coderats-deploy/actions/workflows/deploy-private-dev.yml)
 
-## Contents
+## How a release works
 
-| File | Purpose |
-| --- | --- |
-| `.github/workflows/dev-container.yml` | Private-caller release for web (Node 24) or API (Java 21) to Azure Container Apps DEV |
-| `.github/workflows/dev-get-worker.yml` | Isolated GET beta DEV Azure Container Apps Job, immutable API image, max 100 events |
-| `.github/workflows/validate-templates.yml` | Public syntax and security sanity-check — no private checkout |
-| `examples/web-private-caller.yml` | Manual web DEV dispatcher for private web repository |
-| `examples/api-private-caller.yml` | Manual API DEV dispatcher for private API repository |
-| `examples/worker-private-caller.yml` | Manual GET worker DEV dispatcher for private infra repository |
-| `scripts/validate_templates.py` | Static checks for template restrictions |
+```text
+coderats-hub/coderats-deploy (PUBLIC, workflow_dispatch, protected dev)
+  ├─ short-lived GitHub App token (read-only, one repository)
+  ├─ authenticated checkout (private develop/main into app-src)
+  ├─ tests + Docker build on a dedicated, isolated self-hosted runner
+  ├─ Azure login via OIDC for coderats-deploy:environment:dev
+  └─ DEV ACR push → Container Apps revision and health check
+       or immutable GET DEV worker update + bounded execution
+```
 
-## Setup by CodeRats organization administrator
+One workflow: `.github/workflows/deploy-private-dev.yml`. Choose `web`,
+`api`, or `get-worker`; type `DEPLOY_DEV`. Only the trusted `main`
+workflow code is allowed to deploy and the job uses the protected `dev`
+GitHub Environment. The source checkout uses `develop` for private web/API,
+`main` for private infrastructure. Both paths are **fixed**, not user input.
 
-1. Create an **ephemeral, dedicated Linux x64 self-hosted runner** with Docker + BuildKit, `az`, `jq`, `curl`, Node 24 and Java 21. Add the label `coderats-deploy`. Put it in a runner group accessible **only to** the private repositories `coderats-hub/web-coderats-base`, `coderats-hub/api-coderats-base` and `coderats-hub/coderats-base-infra`. **Never** expose this runner to this public repository, public PRs, or unrelated workflows. Self-hosted infrastructure may incur Azure/VM operating costs.
-2. Copy each file under `examples/` into the matching private repository as `.github/workflows/dev-self-hosted.yml`. **Replace** `REPLACE_WITH_FULL_40_CHARACTER_PUBLIC_REPO_SHA` with the immutable current commit SHA of this repository's `main`. Do not pin a mutable branch or tag.
-3. Ensure `dev` GitHub Environment secrets **in each private caller** include `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`. The web caller also needs `AZURE_CONTAINER_APP` (name of DEV web Container App) and `NEXT_PUBLIC_API_URL` (the HTTPS DEV API origin) as GitHub Variables; never hardcode secrets in this repository. API target is `ca-coderats-base-api-dev`.
-4. Create narrowly scoped Azure federated credentials for each **private** repository's `environment:dev` OIDC subject. The federated subject must be `repo:coderats-hub/<private-repo>:environment:dev`; not `repo:coderats-hub/coderats-deploy`. Give the identity only required DEV ACR push and Container App update permissions.
-5. Only after the runner is online and secrets are configured, manually dispatch `CodeRats web DEV (self-hosted)` on private `web-coderats-base/develop`. Confirm tests, image, ready revision, health and the single TRACES proficiency disclosure (PR #70). Next dispatch API DEV on `api-coderats-base/develop`, and then GET worker on `coderats-base-infra/main`.
-6. Keep existing deployment workflows from updating the same Container Apps concurrently. Start with manual dispatch only and enable automatic private-caller triggers after a successful rehearsal.
+| Service | Private checkout | Azure DEV operation |
+| --- | --- | --- |
+| web | `coderats-hub/web-coderats-base@develop` | npm tests, TypeScript, Next build, Docker, ACR, web Container App and `/health` |
+| api | `coderats-hub/api-coderats-base@develop` | Java 21/Maven verification, Docker, ACR, API Container App and health |
+| get-worker | `coderats-hub/coderats-base-infra@main` | Resolve deployed API image to SHA-256 digest, update isolated GET Job, start bounded DEV batch |
 
-**Important:** the templates don't automatically create the runners or Azure identities, do not touch production, and do not grant the public repository access to private source. A successful workflow also does not prove all UI business rules are correct; test TRACES with a real authenticated beta participant.
+No source, tokens, private test failures, or full Docker output are uploaded
+as public artifacts. Private logs are written to the runner's local temp
+directory and are **not** uploaded to Actions. Source checkout is removed at
+the end. Treat the runner disk as sensitive and destroy it after each job.
 
-## Security and cost guardrails
+## Required one-time administration
 
-- Private repo is the `workflow_call` caller and checkout source; reusable workflows run using caller context and its approval/permissions.
-- The shared template job has `runs-on: [self-hosted, linux, x64, coderats-deploy]`, `environment: dev` and fixed CodeRats DEV resource group and registry checks.
-- Never expose secrets through workflow summaries, logs, container tags or repository files. Only masked Environment secrets; no public deployment endpoint for untrusted user inputs.
-- Restrict runner-group access and wipe runner filesystem/credentials between jobs. Prefer ephemeral agents/VMs with no other workloads.
-- Every caller pins immutable public template SHA. Re-pin only after review when public template changes.
-- Never add `pull_request_target` or an unrestricted `repository_dispatch` handler. All deployment triggers are restricted to trusted branches.
-- GitHub-hosted runner minutes for templates validation are allowed here because the checks only validate this public repo's own files. Do not use GitHub-hosted runners in this public repo to build or release unrelated private project code.
+The assistant's GitHub app connector cannot configure secrets, environments,
+federated Azure identities, or runners. An organization admin must do the
+following **before triggering a release**:
 
-## References
+1. Register a dedicated GitHub App, e.g. `coderats-deploy-read`, with
+   **Contents: Read-only** and no unnecessary permissions. Install it on
+   **selected repositories only**:
+   `web-coderats-base`, `api-coderats-base`, `coderats-base-infra`.
+   This public repo is not granted private access without this explicit install.
+2. In this public repository create environment **`dev`**, restrict to
+   branch `main`, and require review by a trusted CodeRats maintainer.
+   Store its **environment secret** `CODERATS_DEPLOY_APP_PRIVATE_KEY` and
+   **environment variable** `CODERATS_DEPLOY_APP_ID`.
+3. In that same environment add Azure OIDC secrets
+   `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`,
+   `AZURE_SUBSCRIPTION_ID`, plus variables
+   `AZURE_WEB_CONTAINER_APP` (verified web DEV Container App name) and
+   `NEXT_PUBLIC_API_URL` (HTTPS API DEV origin).
+4. Create an **Azure federated identity credential** for subject
+   `repo:coderats-hub/coderats-deploy:environment:dev`, with audience
+   `api://AzureADTokenExchange`, trusted to update **DEV only**.
+   Give only required ACR push and Container Apps update/job permissions.
+   Previous credentials scoped to the three private repos **do not**
+   automatically authenticate this public repository.
+5. Provision an **ephemeral single-purpose Linux x64 self-hosted runner**
+   with Docker/BuildKit, Azure CLI + Container Apps extension, Node 24,
+   Java 21, `jq`, `curl` and Git. Label it `coderats-public-deploy`.
+   Use dedicated VM images and recreate the VM after *every* job.
+   Restrict the runner group to this specific repository **and, where
+   supported, this precise deployment workflow**.
+6. Protect public `main` against unreviewed modifications; limit public
+   workflow changes to trusted reviewers. **Never** enable `pull_request`,
+   `pull_request_target`, `repository_dispatch`, arbitrary ref
+   inputs or fork-triggered code on this runner.
+7. Run [the central workflow](https://github.com/coderats-hub/coderats-deploy/actions/workflows/deploy-private-dev.yml)
+   with `web` + `DEPLOY_DEV`; check successful tests, image SHA, DEV
+   ready revision and health. Then test TRACES manually with real beta data.
+   For API and GET worker, execute their choices separately.
 
-- [Reusable workflows](https://docs.github.com/en/actions/sharing-automations/reusing-workflows)
-- [Self-hosted runner security](https://docs.github.com/en/actions/security-for-github-actions/security-guides/security-hardening-for-github-actions#hardening-for-self-hosted-runners)
-- [GitHub Actions billing](https://docs.github.com/en/billing/concepts/product-billing/github-actions)
-- [GitHub terms for additional products](https://docs.github.com/en/site-policy/github-terms/github-terms-for-additional-products-and-features)
+### Security warning and runner terms
+
+**This approach does not get unlimited free GitHub-hosted minutes for
+private CodeRats builds.** GitHub's terms restrict GitHub-hosted runner activity
+unrelated to the project associated with the public repository. For this
+reason this workflow **requires a self-hosted runner**, which may incur VM
+costs. There is no supported switch to `ubuntu-latest` for private builds
+solely to bypass private-repository quota or spending limits.
+
+GitHub itself discourages self-hosted runners on **public repositories**,
+because an untrusted PR can compromise persistent runners. The manual-only,
+protected-environment workflow and ephemeral runner are risk-mitigation
+requirements, not a guarantee of security. If those controls cannot be
+provided, use a **private orchestration repository**, Azure remote build
+system, or another trusted CI instead.
+
+- [GitHub Actions terms](https://docs.github.com/en/site-policy/github-terms/github-terms-for-additional-products-and-features)
+- [GitHub Actions secure use](https://docs.github.com/en/actions/reference/security/secure-use)
+- [GitHub App token action](https://github.com/actions/create-github-app-token)
+- [Private checkout](https://github.com/actions/checkout)
+
+## Older templates
+
+`dev-container.yml`, `dev-get-worker.yml`, and `examples/` were created
+for a **previous, private-caller reusable-workflow design**. They are
+retained for reference only and **are not the supported deployment entrypoint**.
+The supported path is `deploy-private-dev.yml` in **this public repository**.
+
+The `validate-templates.yml` workflow uses the public hosted runner **only**
+to lint this public repository's own YAML and Bash scripts (no private source).

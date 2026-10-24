@@ -3,12 +3,6 @@ name: Deploy CodeRats private services to DEV
 # This repository is the actual workflow owner and dispatcher.
 # No workflow is called from a private repository.
 on:
-  # One-time diagnostic dispatch because the connected GitHub integration
-  # cannot invoke workflow_dispatch directly. Removed after test.
-  push:
-    branches: [main]
-    paths:
-      - ".github/workflows/deploy-private-dev.yml"
   workflow_dispatch:
     inputs:
       service:
@@ -29,18 +23,13 @@ permissions:
   id-token: write
 
 concurrency:
-  group: coderats-central-dev-${{ github.event_name == 'push' && 'web' || inputs.service }}
+  group: coderats-central-dev-${{ inputs.service }}
   cancel-in-progress: false
 
 jobs:
   deploy:
-    name: Build and release ${{ github.event_name == 'push' && 'web' || inputs.service }} (private source)
-    if: >-
-      github.repository == 'coderats-hub/coderats-deploy' &&
-      github.ref == 'refs/heads/main' &&
-      (github.event_name == 'workflow_dispatch' ||
-       (github.event_name == 'push' &&
-        github.event.head_commit.message == 'ci(dev): perform one-time web DEV smoke release'))
+    name: Build and release ${{ inputs.service }} (private source)
+    if: github.repository == 'coderats-hub/coderats-deploy' && github.ref == 'refs/heads/main'
     environment: dev
     # The CodeRats deployment tooling lives in this public repository.
     # Only trusted manual releases from protected main / environment dev may
@@ -49,7 +38,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 70
     env:
-      DEPLOY_SERVICE: ${{ github.event_name == 'push' && 'web' || inputs.service }}
+      DEPLOY_SERVICE: ${{ inputs.service }}
     defaults:
       run:
         shell: bash
@@ -58,7 +47,7 @@ jobs:
         id: target
         env:
           SERVICE: ${{ env.DEPLOY_SERVICE }}
-          CONFIRMATION: ${{ github.event_name == 'push' && 'DEPLOY_DEV' || inputs.confirmation }}
+          CONFIRMATION: ${{ inputs.confirmation }}
         run: |
           set -euo pipefail
           [[ "$CONFIRMATION" == "DEPLOY_DEV" ]] || {

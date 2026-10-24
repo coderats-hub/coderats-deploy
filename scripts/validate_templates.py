@@ -18,14 +18,7 @@ for name in ("dev-container.yml", "dev-get-worker.yml", "validate-templates.yml"
     elif name == "deploy-private-dev.yml":
         # This workflow runs HERE, not in the private caller repository.
         on = data.get("on", data.get(True, {}))
-        assert isinstance(on, dict)
-        if "push" in on:
-            assert set(on) == {"workflow_dispatch", "push"}
-            assert "ci(dev): smoke API release" in text
-            assert "ci(dev): smoke GET worker release" in text
-            assert ".github/workflows/deploy-private-dev.yml" in text
-        else:
-            assert set(on) == {"workflow_dispatch"}
+        assert isinstance(on, dict) and set(on) == {"workflow_dispatch"}
         assert "runs-on: ubuntu-latest" in text
         assert "self-hosted" not in text
         assert "Check required protected DEV credentials" in text

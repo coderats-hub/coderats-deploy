@@ -8,6 +8,10 @@ on:
     branches: [main]
     paths:
       - ".github/workflows/deploy-private-dev.yml"
+  schedule:
+    # Public hosted runner dispatches the isolated, bounded DEV GET job.
+    # This keeps new check-ins and completed assessments in sync.
+    - cron: "*/15 * * * *"
   workflow_dispatch:
     inputs:
       service:
@@ -28,16 +32,17 @@ permissions:
   id-token: write
 
 concurrency:
-  group: coderats-central-dev-${{ github.event_name == 'push' && 'api' || inputs.service }}
+  group: coderats-central-dev-${{ github.event_name == 'push' && 'api' || github.event_name == 'schedule' && 'get-worker' || inputs.service }}
   cancel-in-progress: false
 
 jobs:
   deploy:
-    name: Build and release ${{ github.event_name == 'push' && 'api' || inputs.service }} (private source)
+    name: Build and release ${{ github.event_name == 'push' && 'api' || github.event_name == 'schedule' && 'get-worker' || inputs.service }} (private source)
     if: >-
       github.repository == 'coderats-hub/coderats-deploy' &&
       github.ref == 'refs/heads/main' &&
       (github.event_name == 'workflow_dispatch' ||
+       github.event_name == 'schedule' ||
        (github.event_name == 'push' &&
         github.event.head_commit.message == 'ci(dev): publish beta4 api'))
     environment: dev
@@ -48,7 +53,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 70
     env:
-      DEPLOY_SERVICE: ${{ github.event_name == 'push' && 'api' || inputs.service }}
+      DEPLOY_SERVICE: ${{ github.event_name == 'push' && 'api' || github.event_name == 'schedule' && 'get-worker' || inputs.service }}
     defaults:
       run:
         shell: bash
@@ -57,7 +62,7 @@ jobs:
         id: target
         env:
           SERVICE: ${{ env.DEPLOY_SERVICE }}
-          CONFIRMATION: ${{ github.event_name == 'push' && 'DEPLOY_DEV' || inputs.confirmation }}
+          CONFIRMATION: ${{ (github.event_name == 'push' || github.event_name == 'schedule') && 'DEPLOY_DEV' || inputs.confirmation }}
         run: |
           set -euo pipefail
           [[ "$CONFIRMATION" == "DEPLOY_DEV" ]] || {
@@ -88,6 +93,7 @@ jobs:
 
       - name: Issue short-lived GitHub App token for exactly one private repo
         id: private-token
+        if: env.DEPLOY_SERVICE != 'get-worker'
         uses: actions/create-github-app-token@v2
         with:
           app-id: ${{ vars.CODERATS_DEPLOY_APP_ID }}
@@ -98,6 +104,7 @@ jobs:
 
       - name: Checkout the PRIVATE source from its trusted branch
         uses: actions/checkout@v4
+        if: env.DEPLOY_SERVICE != 'get-worker'
         with:
           repository: ${{ steps.target.outputs.repo }}
           ref: ${{ steps.target.outputs.branch }}
@@ -108,6 +115,7 @@ jobs:
 
       - name: Record the private source SHA for reproducible image tag
         id: source
+        if: env.DEPLOY_SERVICE != 'get-worker'
         run: |
           set -euo pipefail
           sha="$(git -C app-src rev-parse HEAD)"

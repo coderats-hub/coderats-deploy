@@ -3,7 +3,7 @@ name: Deploy CodeRats private services to DEV
 # This repository is the actual workflow owner and dispatcher.
 # No workflow is called from a private repository.
 on:
-  # Explicitly authorized beta4 API release retry after correcting Java compilation.
+  # Explicitly authorized beta4 API release after milestone/test reconciliation.
   push:
     branches: [main]
     paths:

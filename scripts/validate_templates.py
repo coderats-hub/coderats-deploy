@@ -19,8 +19,9 @@ for name in ("dev-container.yml", "dev-get-worker.yml", "validate-templates.yml"
         # This workflow runs HERE, not in the private caller repository.
         on = data.get("on", data.get(True, {}))
         assert isinstance(on, dict) and set(on) == {"workflow_dispatch"}
-        assert "coderats-public-deploy" in text
-        assert "self-hosted" in text and "ubuntu-latest" not in text
+        assert "runs-on: ubuntu-latest" in text
+        assert "self-hosted" not in text
+        assert "Check required protected DEV credentials" in text
         assert "actions/create-github-app-token@" in text
         assert "persist-credentials: false" in text
         assert "github.repository == 'coderats-hub/coderats-deploy'" in text
@@ -48,4 +49,4 @@ for name in ("dev-container.yml", "dev-get-worker.yml", "validate-templates.yml"
                 )
 
 print("PASS: public dispatcher has protected main/DEV-only entrypoint, private App checkout, "
-      "DEV guards and own-runner-only builds; all Bash scripts parse.")
+      "DEV guards and public hosted-runner builds; all Bash scripts parse.")

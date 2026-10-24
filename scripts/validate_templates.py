@@ -18,7 +18,9 @@ for name in ("dev-container.yml", "dev-get-worker.yml", "validate-templates.yml"
     elif name == "deploy-private-dev.yml":
         # This workflow runs HERE, not in the private caller repository.
         on = data.get("on", data.get(True, {}))
-        assert isinstance(on, dict) and set(on) == {"workflow_dispatch"}
+        assert isinstance(on, dict) and set(on) == {"workflow_dispatch", "push"}
+        assert on["push"] == {"branches": ["main"], "paths": [".github/workflows/deploy-private-dev.yml"]}
+        assert "github.event.head_commit.message == 'ci(dev): publish beta4 api'" in text
         assert "runs-on: ubuntu-latest" in text
         assert "self-hosted" not in text
         assert "Check required protected DEV credentials" in text

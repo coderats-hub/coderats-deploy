@@ -199,7 +199,7 @@ jobs:
           [[ "$(az acr show -n crcoderatsbasedev9e0045 -g rg-coderats-base-dev --query loginServer -o tsv)" == "crcoderatsbasedev9e0045.azurecr.io" ]] || exit 1
 
       - name: Build private image and publish DEV container revision
-        if: env.DEPLOY_SERVICE == 'web' || inputs.service == 'api'
+        if: env.DEPLOY_SERVICE == 'web' || env.DEPLOY_SERVICE == 'api'
         env:
           SERVICE: ${{ env.DEPLOY_SERVICE }}
           SOURCE_SHA: ${{ steps.source.outputs.sha }}

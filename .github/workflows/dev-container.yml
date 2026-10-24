@@ -1,0 +1,170 @@
+name: CodeRats DEV container release (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      service:
+        description: Exact CodeRats service, web or api
+        required: true
+        type: string
+      resource_group:
+        required: true
+        type: string
+      registry_name:
+        required: true
+        type: string
+      container_app:
+        required: true
+        type: string
+      api_origin:
+        description: Public HTTPS DEV API origin (web only)
+        required: false
+        type: string
+        default: ''
+    secrets:
+      AZURE_CLIENT_ID:
+        required: true
+      AZURE_TENANT_ID:
+        required: true
+      AZURE_SUBSCRIPTION_ID:
+        required: true
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: coderats-dev-${{ inputs.service }}
+  cancel-in-progress: false
+
+jobs:
+  validate-and-release:
+    if: >-
+      (inputs.service == 'web' && github.repository == 'coderats-hub/web-coderats-base' && github.ref == 'refs/heads/develop') ||
+      (inputs.service == 'api' && github.repository == 'coderats-hub/api-coderats-base' && github.ref == 'refs/heads/develop')
+    # Only self-hosted runners scoped to the PRIVATE caller. Never attach
+    # CodeRats private-source runners to the public template repository.
+    runs-on: [self-hosted, linux, x64, coderats-deploy]
+    timeout-minutes: 60
+    environment: dev
+    steps:
+      - name: Validate fixed DEV target
+        shell: bash
+        env:
+          SERVICE: ${{ inputs.service }}
+          RG: ${{ inputs.resource_group }}
+          ACR: ${{ inputs.registry_name }}
+          APP: ${{ inputs.container_app }}
+          API_ORIGIN: ${{ inputs.api_origin }}
+        run: |
+          set -euo pipefail
+          [[ "$RG" == "rg-coderats-base-dev" ]] || exit 1
+          [[ "$ACR" == "crcoderatsbasedev9e0045" ]] || exit 1
+          [[ "$APP" =~ ^[a-z0-9-]{4,80}$ ]] || exit 1
+          [[ "$APP" == *-dev ]] || exit 1
+          case "$SERVICE" in
+            web)
+              [[ "$API_ORIGIN" == https://* ]] || exit 1
+              ;;
+            api)
+              [[ "$APP" == "ca-coderats-base-api-dev" ]] || exit 1
+              ;;
+            *) exit 1;;
+          esac
+
+      - name: Checkout private calling repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        if: inputs.service == 'web'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Web validation
+        if: inputs.service == 'web'
+        shell: bash
+        env:
+          NEXT_PUBLIC_API_URL: ${{ inputs.api_origin }}
+        run: |
+          set -euo pipefail
+          npm ci --no-audit --no-fund
+          npm run test
+          npx tsc --noEmit
+          npm run build -- --webpack
+
+      - name: Set up Java
+        if: inputs.service == 'api'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Java validation
+        if: inputs.service == 'api'
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x mvnw
+          ./mvnw --batch-mode verify
+
+      - name: Azure federated login from private caller
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Build image and deploy DEV revision
+        shell: bash
+        env:
+          SERVICE: ${{ inputs.service }}
+          RG: ${{ inputs.resource_group }}
+          ACR: ${{ inputs.registry_name }}
+          APP: ${{ inputs.container_app }}
+          API_ORIGIN: ${{ inputs.api_origin }}
+          COMMIT_SHA: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          az acr show -g "$RG" -n "$ACR" --query name -o tsv >/dev/null
+          az containerapp show -g "$RG" -n "$APP" --query name -o tsv >/dev/null
+          server="$(az acr show -n "$ACR" -g "$RG" --query loginServer -o tsv)"
+          [[ "$server" == "crcoderatsbasedev9e0045.azurecr.io" ]] || exit 1
+          case "$SERVICE" in
+            web) img=web-coderats-base;;
+            api) img=api-coderats-base;;
+          esac
+          image="$server/$img:$COMMIT_SHA-$RUN_ID"
+          az acr login -n "$ACR" --output none
+          if [[ "$SERVICE" == web ]]; then
+            docker build --file Dockerfile --build-arg "NEXT_PUBLIC_API_URL=$API_ORIGIN" --tag "$image" .
+          else
+            docker build --file Dockerfile --tag "$image" .
+          fi
+          docker push "$image" >/dev/null
+          az containerapp update -g "$RG" -n "$APP" --image "$image" --output none
+          fqdn="$(az containerapp show -g "$RG" -n "$APP" --query 'properties.configuration.ingress.fqdn' -o tsv)"
+          [[ "$fqdn" =~ ^[a-zA-Z0-9.-]+$ ]] || exit 1
+          endpoint=/health
+          [[ "$SERVICE" == api ]] && endpoint=/actuator/health
+          for i in $(seq 1 30); do
+            latest="$(az containerapp show -g "$RG" -n "$APP" --query properties.latestRevisionName -o tsv)"
+            ready="$(az containerapp show -g "$RG" -n "$APP" --query properties.latestReadyRevisionName -o tsv)"
+            if [[ -n "$latest" && "$latest" == "$ready" ]] && curl --fail --silent --show-error --max-time 10 "https://$fqdn$endpoint" >/dev/null; then
+              echo "Release ready; service=$SERVICE; commit=$COMMIT_SHA; revision=$ready" >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo '::error::DEV health/readiness failed; verify rollback to previous revision'
+          exit 1
+
+      - name: Azure logout
+        if: always()
+        shell: bash
+        run: az logout >/dev/null 2>&1 || true

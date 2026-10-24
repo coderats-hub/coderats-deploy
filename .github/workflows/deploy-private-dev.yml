@@ -149,7 +149,28 @@ jobs:
           set -euo pipefail
           runlog="${RUNNER_TEMP}/coderats-api-checks.log"
           if ! (chmod +x mvnw && ./mvnw --batch-mode verify) >"$runlog" 2>&1; then
-            echo "::error::Private Java verification failed. Review the local runner log."
+            echo "::error::Private Java verification failed. Sanitized diagnostics follow."
+            # Never print the raw Maven output from a private repository in
+            # a public workflow. Only known Maven compiler/test markers are
+            # surfaced, with paths and arbitrary failure messages omitted.
+            python3 - "$runlog" <<'PY'
+          import pathlib, re, sys
+          lines = pathlib.Path(sys.argv[1]).read_text(errors='replace').splitlines()
+          errors = [l for l in lines if '[ERROR]' in l]
+          kinds = {
+              'compiler_error': sum(bool(re.search(r'\\.java:\\[\\d+,\\d+\\]', x)) for x in errors),
+              'test_failures': sum('Tests run:' in x or 'Failures:' in x for x in errors),
+              'build_goal_failures': sum('Failed to execute goal' in x for x in errors),
+          }
+          print('Maven failure categories:', kinds)
+          for l in errors[:30]:
+              if re.search(r'\\.java:\\[\\d+,\\d+\\]',l):
+                  match = re.search(r'([A-Za-z0-9_]+\\.java):\\[(\\d+),(\\d+)\\]',l)
+                  if match:
+                      print('Compiler location:',match.group(1),match.group(2),match.group(3))
+              elif re.search(r'Tests run:|There are test failures|Failed to execute goal|COMPILATION ERROR',l):
+                  print('Maven marker:',re.split(r'[:(]',l.replace('[ERROR]','').strip(),maxsplit=1)[0][:120])
+          PY
             exit 1
           fi
           echo "Private API tests passed."

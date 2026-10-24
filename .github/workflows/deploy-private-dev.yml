@@ -167,7 +167,7 @@ jobs:
               if 'Tests run:' in l:
                   test = re.search(r'(?:-- in |- in )([A-Za-z0-9_.$]+)', l)
                   if test:
-                      counts = re.search(r'Tests run: (\\d+), Failures: (\\d+), Errors: (\\d+)', l)
+                      counts = re.search(r'Tests run: ([0-9]+), Failures: ([0-9]+), Errors: ([0-9]+)', l)
                       if counts:
                           print('Test class:',test.group(1),'runs/failures/errors:',*counts.groups())
           for l in errors[:30]:

@@ -16,6 +16,4 @@ jobs:
       service: web
       resource_group: rg-coderats-base-dev
       registry_name: crcoderatsbasedev9e0045
-      container_app: ${{ vars.AZURE_CONTAINER_APP }}
-      api_origin: ${{ vars.NEXT_PUBLIC_API_URL }}
     secrets: inherit

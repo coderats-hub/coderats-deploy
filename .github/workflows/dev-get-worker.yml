@@ -1,0 +1,67 @@
+name: CodeRats GET DEV worker release (reusable)
+
+on:
+  workflow_call:
+    secrets:
+      AZURE_CLIENT_ID:
+        required: true
+      AZURE_TENANT_ID:
+        required: true
+      AZURE_SUBSCRIPTION_ID:
+        required: true
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: coderats-get-dev-worker
+  cancel-in-progress: false
+
+jobs:
+  release-worker:
+    if: github.repository == 'coderats-hub/coderats-base-infra' && github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, linux, x64, coderats-deploy]
+    environment: dev
+    timeout-minutes: 20
+    steps:
+      - name: Azure OIDC login from private infrastructure repository
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Pin worker to deployed immutable API image and run bounded batch
+        shell: bash
+        run: |
+          set -euo pipefail
+          rg=rg-coderats-base-dev
+          app=ca-coderats-base-api-dev
+          job=caj-coderats-base-get-dev
+          registry=crcoderatsbasedev9e0045
+          img="$(az containerapp show -g "$rg" -n "$app" --query 'properties.template.containers[0].image' -o tsv)"
+          [[ "$img" == "$registry.azurecr.io/api-coderats-base:"* || "$img" == "$registry.azurecr.io/api-coderats-base@sha256:"* ]] || exit 1
+          manifest="${img#${registry}.azurecr.io/}"
+          digest="$(az acr manifest show-metadata -r "$registry" -n "$manifest" --query digest -o tsv)"
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
+          immutable="$registry.azurecr.io/api-coderats-base@$digest"
+          az containerapp job show -g "$rg" -n "$job" --query name -o tsv >/dev/null
+          az containerapp job update -g "$rg" -n "$job" --container-name get-worker --image "$immutable" \
+            --set-env-vars APP_RUNTIME_MODE=worker SPRING_PROFILES_ACTIVE=get-worker \
+              GET_WORKER_ENABLED=true GET_BACKFILL_ENABLED=false GET_WORKER_RUN_ONCE=true \
+              GET_WORKER_MAX_EVENTS=100 GET_WORKER_MAX_RUN_SECONDS=1200 \
+              GET_BETA_ENABLED=true GET_BETA_ENVIRONMENT=dev \
+              GET_BETA_ALLOWED_REPOSITORY_OWNER=coderats-hub GET_BETA_ALLOW_LEGACY_OAUTH=true \
+              GET_BETA_POLICY_RELEASE=beta3-traces --output none
+          active="$(az containerapp job execution list -g "$rg" -n "$job" --query '[].properties.status' -o tsv)"
+          if printf '%s\n' "$active" | grep -Eiq '^(Running|Pending|Processing)$'; then
+            echo 'GET already running; skipping duplicate.' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          az containerapp job start -g "$rg" -n "$job" --output none
+          echo "GET DEV started using digest $digest" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Azure logout
+        if: always()
+        run: az logout >/dev/null 2>&1 || true

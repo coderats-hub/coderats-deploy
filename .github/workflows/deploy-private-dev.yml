@@ -46,7 +46,7 @@ jobs:
        (github.event_name == 'push' &&
         (github.event.head_commit.message == 'ci(dev): publish beta4 api' ||
           (github.event.head_commit.message == 'ci(dev): verify GET worker' ||
-           github.event.head_commit.message == 'ci(dev): publish profile release preview')))
+           github.event.head_commit.message == 'ci(dev): publish profile release preview'))))
     environment: dev
     # The CodeRats deployment tooling lives in this public repository.
     # Only trusted manual releases from protected main / environment dev may

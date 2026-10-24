@@ -34,7 +34,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: coderats-hub/web-coderats-base
-          ref: release/profile-achievements-themes-20261024
+          ref: 9913a6e2b2d780ed212fa618deaedc228ed8466e
           token: ${{ steps.token.outputs.token }}
           persist-credentials: false
           path: private-web

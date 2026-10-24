@@ -14,8 +14,9 @@ on:
         required: true
         type: string
       container_app:
-        required: true
+        required: false
         type: string
+        default: ''
       api_origin:
         description: Public HTTPS DEV API origin (web only)
         required: false
@@ -54,8 +55,8 @@ jobs:
           SERVICE: ${{ inputs.service }}
           RG: ${{ inputs.resource_group }}
           ACR: ${{ inputs.registry_name }}
-          APP: ${{ inputs.container_app }}
-          API_ORIGIN: ${{ inputs.api_origin }}
+          APP: ${{ inputs.container_app || vars.AZURE_CONTAINER_APP || secrets.AZURE_CONTAINER_APP }}
+          API_ORIGIN: ${{ inputs.api_origin || vars.NEXT_PUBLIC_API_URL || secrets.NEXT_PUBLIC_API_URL }}
         run: |
           set -euo pipefail
           [[ "$RG" == "rg-coderats-base-dev" ]] || exit 1
@@ -125,8 +126,8 @@ jobs:
           SERVICE: ${{ inputs.service }}
           RG: ${{ inputs.resource_group }}
           ACR: ${{ inputs.registry_name }}
-          APP: ${{ inputs.container_app }}
-          API_ORIGIN: ${{ inputs.api_origin }}
+          APP: ${{ inputs.container_app || vars.AZURE_CONTAINER_APP || secrets.AZURE_CONTAINER_APP }}
+          API_ORIGIN: ${{ inputs.api_origin || vars.NEXT_PUBLIC_API_URL || secrets.NEXT_PUBLIC_API_URL }}
           COMMIT_SHA: ${{ github.sha }}
           RUN_ID: ${{ github.run_id }}
         run: |

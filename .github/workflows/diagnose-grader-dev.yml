@@ -200,6 +200,67 @@ jobs:
             fi
           fi
 
+          # Correlate accepted HTTP ingress with source extensions and historical
+          # configuration *creation* logs. Emit only booleans/counts; never paths/IDs.
+          if [[ "$workspace" =~ ^[0-9a-fA-F-]{36}$ ]]; then
+            cat >"$tmp/language.kql" <<'KQL'
+          let configuration =
+            ContainerAppConsoleLogs_CL
+            | where TimeGenerated between (datetime(2026-09-25T00:00:00Z) .. datetime(2026-10-25T19:30:00Z))
+            | where ContainerAppName_s=="ca-coderats-grader-dev"
+            | where Log_s contains "Creating grading configuration:"
+            | extend Assignment=extract(@"assignment=([^, ]+)",1,Log_s)
+            | extend AllowText=extract(@"languages=\[([a-zA-Z0-9_, ]+)\]",1,Log_s)
+            | where isnotempty(Assignment)
+            | summarize arg_max(TimeGenerated,AllowText) by Assignment;
+          ContainerAppConsoleLogs_CL
+          | where TimeGenerated between (datetime(2026-10-25T16:30:00Z) .. datetime(2026-10-25T19:30:00Z))
+          | where ContainerAppName_s=="ca-coderats-grader-dev"
+          | where Log_s contains "Submission request received:"
+          | extend Assignment=extract(@"assignment=([^, ]+)",1,Log_s)
+          | extend Py=Log_s contains ".py", Java=Log_s contains ".java"
+          | extend Node=Log_s contains ".js" or Log_s contains ".ts"
+          | join kind=leftouter configuration on Assignment
+          | project SlotUTC=format_datetime(TimeGenerated,"yyyy-MM-dd HH:mm"),
+              PythonFiles=Py, JavaFiles=Java, NodeFiles=Node,
+              ConfigCreationSeen=isnotempty(AllowText),
+              PythonAllowedAtCreation=AllowText contains "python",
+              JavaAllowedAtCreation=AllowText contains "java",
+              NodeAllowedAtCreation=AllowText contains "node"
+          | take 20
+          KQL
+            if az monitor log-analytics query --workspace "$workspace" \
+                --analytics-query "$(cat "$tmp/language.kql")" -o json >"$tmp/language.json" 2>"$tmp/error"; then
+              python3 - "$tmp/language.json" <<'PY'
+          import json, re, sys
+          try:
+              data=json.load(open(sys.argv[1],encoding="utf-8"))
+              rows=data if isinstance(data,list) else []
+              if isinstance(data,dict) and isinstance(data.get("tables"),list):
+                  rows=[]
+                  for table in data["tables"]:
+                      columns=[x["name"] for x in table["columns"]]
+                      rows += [dict(zip(columns, r)) for r in table.get("rows",[])]
+              for row in rows:
+                  slot=str(row.get("SlotUTC",""))
+                  if not re.fullmatch(r"2026-10-25 1[6-9]:[0-5][0-9]",slot):
+                      continue
+                  def flag(k):
+                      v=row.get(k,False)
+                      return "yes" if v is True or str(v).lower()=="true" else "no"
+                  keys=["PythonFiles","JavaFiles","NodeFiles","ConfigCreationSeen",
+                        "PythonAllowedAtCreation","JavaAllowedAtCreation","NodeAllowedAtCreation"]
+                  print(f"AZURE_LANGUAGE utc={slot} "+
+                        " ".join(k+"="+flag(k) for k in keys))
+              print(f"AZURE_LANGUAGE total_requests={len(rows)}")
+          except (OSError,ValueError,KeyError,TypeError):
+              print("AZURE_LANGUAGE unavailable_response")
+          PY
+            else
+              echo "::notice::Historical language correlation query unavailable"
+            fi
+          fi
+
           # Historical events may no longer be in a running replica's last 300 lines.
           # Tail is secondary and is processed locally without leaking raw lines.
           for app in "$api" "$grader"; do

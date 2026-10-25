@@ -1,0 +1,132 @@
+name: Release universal grader languages to DEV
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/release-grader-languages-dev.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: coderats-grader-dev-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: >-
+      github.repository == 'coderats-hub/coderats-deploy' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'push' &&
+        github.event.head_commit.message == 'ci(dev): release universal grader languages'))
+    runs-on: ubuntu-latest
+    environment: dev
+    timeout-minutes: 70
+    steps:
+      - name: Validate protected DEV release configuration
+        env:
+          GITHUB_APP_ID: ${{ vars.CODERATS_DEPLOY_APP_ID }}
+          GITHUB_APP_KEY: ${{ secrets.CODERATS_DEPLOY_APP_PRIVATE_KEY }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for k in GITHUB_APP_ID GITHUB_APP_KEY AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID; do
+            [[ -n "${!k}" ]] || { echo "::error::Missing protected DEV value for $k"; exit 1; }
+          done
+      - name: Issue read-only private grader token
+        id: token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.CODERATS_DEPLOY_APP_ID }}
+          private-key: ${{ secrets.CODERATS_DEPLOY_APP_PRIVATE_KEY }}
+          owner: coderats-hub
+          repositories: api-grader-coderats
+          permission-contents: read
+      - name: Checkout exact private Grader SHA
+        uses: actions/checkout@v4
+        with:
+          repository: coderats-hub/api-grader-coderats
+          ref: 6b897bfa7add314ef5766518974cb71a7e077249
+          token: ${{ steps.token.outputs.token }}
+          persist-credentials: false
+          fetch-depth: 1
+          path: grader-src
+      - name: Validate source SHA
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$(git -C grader-src rev-parse HEAD)" == "6b897bfa7add314ef5766518974cb71a7e077249" ]] || exit 1
+      - name: Prepare Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify private Grader without exposing source output
+        working-directory: grader-src
+        shell: bash
+        run: |
+          set -euo pipefail
+          log="$RUNNER_TEMP/coderats-grader-checks.log"
+          if ! (python -m pip install --disable-pip-version-check -r requirements.txt &&
+            python -m compileall -q web autograder sandbox_manager &&
+            python -m pytest -q tests/unit/test_automatic_source_language.py tests/integration/test_language_validation_api.py) >"$log" 2>&1; then
+            echo "::error::Grader dependency install or language tests failed. Private logs suppressed."
+            exit 1
+          fi
+          echo "Private Grader language checks passed." >> "$GITHUB_STEP_SUMMARY"
+      - name: Login to Azure DEV with OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Build, publish and verify grader DEV revision
+        env:
+          EXPECTED_SUBSCRIPTION: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rg=rg-coderats-base-dev
+          registry=crcoderatsbasedev9e0045
+          app=ca-coderats-grader-dev
+          [[ "$(az account show --query id -o tsv)" == "$EXPECTED_SUBSCRIPTION" ]] || exit 1
+          [[ "$(az group show -n "$rg" --query name -o tsv)" == "$rg" ]] || exit 1
+          [[ "$(az acr show -g "$rg" -n "$registry" --query loginServer -o tsv)" == "$registry.azurecr.io" ]] || exit 1
+          [[ "$(az containerapp show -g "$rg" -n "$app" --query name -o tsv)" == "$app" ]] || exit 1
+          image="$registry.azurecr.io/api-grader-coderats:6b897bfa7add314ef5766518974cb71a7e077249-$GITHUB_RUN_ID"
+          az acr login -n "$registry" --output none
+          if ! docker build -f grader-src/Dockerfile.cloud -t "$image" grader-src >"$RUNNER_TEMP/grader-build.log" 2>&1; then
+            echo "::error::Grader Docker build failed. Private logs suppressed."
+            exit 1
+          fi
+          if ! docker push "$image" >"$RUNNER_TEMP/grader-push.log" 2>&1; then
+            echo "::error::Grader image push failed."
+            exit 1
+          fi
+          az containerapp update -g "$rg" -n "$app" --image "$image" --output none
+          for i in $(seq 1 45); do
+            actual="$(az containerapp show -g "$rg" -n "$app" --query 'properties.template.containers[0].image' -o tsv)"
+            latest="$(az containerapp show -g "$rg" -n "$app" --query properties.latestRevisionName -o tsv)"
+            ready="$(az containerapp show -g "$rg" -n "$app" --query properties.latestReadyRevisionName -o tsv)"
+            if [[ "$actual" == "$image" && -n "$latest" && "$latest" == "$ready" ]]; then
+              echo "Grader DEV published and revision ready: $ready" >> "$GITHUB_STEP_SUMMARY"
+              echo "Private Grader SHA: 6b897bfa7add314ef5766518974cb71a7e077249" >> "$GITHUB_STEP_SUMMARY"
+              echo "Existing CodeRats colony language policies are normalized during Grader startup." >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::New Grader DEV revision not ready. Check private Grader startup/migration errors."
+          exit 1
+      - name: Cleanup private sources and Azure session
+        if: always()
+        shell: bash
+        run: |
+          rm -rf grader-src || true
+          az logout >/dev/null 2>&1 || true

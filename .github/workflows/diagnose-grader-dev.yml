@@ -1,0 +1,190 @@
+name: Diagnose grader failures in Azure DEV
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/diagnose-grader-dev.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: coderats-dev-grader-diagnostics
+  cancel-in-progress: false
+
+jobs:
+  diagnostics:
+    name: Sanitized DEV grader diagnostics
+    if: >-
+      github.repository == 'coderats-hub/coderats-deploy' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'push' &&
+        github.event.head_commit.message == 'ci(dev): diagnose grader evaluations'))
+    runs-on: ubuntu-latest
+    environment: dev
+    timeout-minutes: 15
+    steps:
+      - name: Authenticate with DEV-only Azure OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Inspect only allowlisted API and Grader applications
+        shell: bash
+        env:
+          EXPECTED_SUBSCRIPTION: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          rg=rg-coderats-base-dev
+          api=ca-coderats-base-api-dev
+          grader=ca-coderats-grader-dev
+          day=2026-10-25
+
+          if [[ "$(az account show --query id -o tsv 2>"$tmp/error")" != "$EXPECTED_SUBSCRIPTION" ]]; then
+            echo "::error::Azure OIDC subscription scope mismatch"
+            exit 1
+          fi
+          for app in "$api" "$grader"; do
+            if az containerapp show -g "$rg" -n "$app" --query name -o tsv >"$tmp/check" 2>"$tmp/error"; then
+              echo "Verified DEV app role: $([[ "$app" == "$api" ]] && echo api || echo grader)"
+            else
+              echo "::warning::DEV app role inaccessible: $([[ "$app" == "$api" ]] && echo api || echo grader)"
+            fi
+          done
+
+          if ! env_id="$(az containerapp show -g "$rg" -n "$api" --query properties.environmentId -o tsv 2>"$tmp/error")" || [[ -z "$env_id" ]]; then
+            echo "::error::Cannot find the protected DEV Container Apps environment"
+            exit 1
+          fi
+          workspace="$(az containerapp env show --ids "$env_id" --query properties.appLogsConfiguration.logAnalyticsConfiguration.customerId -o tsv 2>"$tmp/error" || true)"
+          if [[ ! "$workspace" =~ ^[0-9a-fA-F-]{36}$ ]]; then
+            workspace="$(az monitor log-analytics workspace list -g "$rg" --query '[0].customerId' -o tsv 2>"$tmp/error" || true)"
+          fi
+
+          # Azure log messages may contain source, personal data, request bodies and credentials.
+          # NEVER print raw logs or upload them as public GitHub artifacts.
+          # The analytics query returns only allowlisted classifications, timestamps and counts.
+          if [[ "$workspace" =~ ^[0-9a-fA-F-]{36}$ ]]; then
+            cat >"$tmp/query.kql" <<'KQL'
+          union isfuzzy=true ContainerAppConsoleLogs_CL, ContainerAppConsoleLogs
+          | where TimeGenerated between (datetime(2026-10-25T16:30:00Z) .. datetime(2026-10-25T19:30:00Z))
+          | extend App=tostring(column_ifexists("ContainerAppName_s",column_ifexists("ContainerAppName","")))
+          | where App in ("ca-coderats-base-api-dev", "ca-coderats-grader-dev")
+          | extend Message=tolower(tostring(column_ifexists("Log_s",column_ifexists("Log",""))))
+          | extend Kind=case(
+              Message contains "detected unsupported source languages" or Message contains "language" and Message contains "not supported" or Message contains "unsupported language", "LANGUAGE_REJECTED",
+              Message contains "grading configuration" and Message contains "not found" or Message contains "unknown grading template", "CONFIG_NOT_FOUND",
+              Message contains "snapshot" and Message contains "empty" or Message contains "github returned no changed files", "EMPTY_GITHUB_SNAPSHOT",
+              Message contains "rejected the contribution" or Message contains "post /api/v1/submissions" and Message contains "failed", "GRADER_POST_REJECTED",
+              Message contains "read timed out" or Message contains "timeout" or Message contains "timed out", "TIMEOUT",
+              Message contains "connection refused" or Message contains "unavailable while" or Message contains "connectexception", "NETWORK_UNAVAILABLE",
+              Message contains "dispatch failed" or Message contains "unexpected dispatch failure", "API_DISPATCH_FAILED",
+              Message contains "pipeline failed" or Message contains "failed to produce results", "GRADER_PIPELINE_FAILED",
+              Message contains "error grading submission" or Message contains "submission" and Message contains "status updated to failed", "GRADER_EXCEPTION",
+              Message contains "sandbox creation failed" or Message contains "preflight" and Message contains "failed", "SANDBOX_OR_PREFLIGHT",
+              Message contains "http 400" or Message contains "http 401" or Message contains "http 403" or Message contains "http 404" or Message contains "http 422" or Message contains "http 500" or Message contains "http 502" or Message contains "http 503", "HTTP_ERROR",
+              "OTHER")
+          | summarize Events=count() by App, Slot=bin(TimeGenerated, 15m), Kind
+          | project SlotUTC=format_datetime(Slot,"yyyy-MM-dd HH:mm"), Service=iff(App=="ca-coderats-grader-dev","grader","api"), Category=Kind, Events
+          | order by SlotUTC asc
+          | take 500
+          KQL
+            if az monitor log-analytics query --workspace "$workspace" \
+                --analytics-query "$(cat "$tmp/query.kql")" -o json >"$tmp/results.json" 2>"$tmp/error"; then
+              echo "Historical Log Analytics query succeeded (UTC 16:30-19:30)."
+              python3 - "$tmp/results.json" <<'PY'
+          import json, re, sys
+          allowed = {"LANGUAGE_REJECTED", "CONFIG_NOT_FOUND", "EMPTY_GITHUB_SNAPSHOT",
+                     "GRADER_POST_REJECTED", "TIMEOUT", "NETWORK_UNAVAILABLE",
+                     "API_DISPATCH_FAILED", "GRADER_PIPELINE_FAILED",
+                     "GRADER_EXCEPTION", "SANDBOX_OR_PREFLIGHT", "HTTP_ERROR", "OTHER"}
+          try:
+              data=json.load(open(sys.argv[1],encoding="utf-8"))
+              if isinstance(data, dict) and isinstance(data.get("tables"),list):
+                  rows=[]
+                  for table in data["tables"]:
+                      columns=[x["name"] for x in table["columns"]]
+                      rows += [dict(zip(columns, r)) for r in table.get("rows",[])]
+              elif isinstance(data,list):
+                  rows=data
+              else:
+                  rows=[]
+              count=0
+              total=0
+              for r in rows:
+                  if not isinstance(r,dict):
+                      continue
+                  role=r.get("Service","")
+                  kind=r.get("Category","")
+                  slot=r.get("SlotUTC","")
+                  try: n=int(r.get("Events",0))
+                  except (TypeError,ValueError): continue
+                  if role not in ("api","grader") or kind not in allowed or not (0<=n<=10000000):
+                      continue
+                  if not isinstance(slot,str) or not re.fullmatch(r"2026-10-25 (?:1[6-9]):[0-5][0-9]",slot):
+                      continue
+                  total+=n
+                  if kind!="OTHER":
+                      print(f"AZURE_LOG signal utc={slot} role={role} kind={kind} events={n}")
+                      count+=1
+              print(f"AZURE_LOG historical_rows={len(rows)} classified_rows={count} total_matched_and_unmatched={total}")
+          except (OSError,ValueError,KeyError,TypeError):
+              print("AZURE_LOG diagnostic_response_unreadable")
+          PY
+            else
+              echo "::notice::Log Analytics query unavailable (permissions, missing table or workspace); attempting limited safe tail."
+            fi
+          else
+            echo "::notice::No queryable Log Analytics workspace found; attempting limited safe tail."
+          fi
+
+          # Historical events may no longer be in a running replica's last 300 lines.
+          # Tail is secondary and is processed locally without leaking raw lines.
+          for app in "$api" "$grader"; do
+            role="$([[ "$app" == "$api" ]] && echo api || echo grader)"
+            if timeout 45s az containerapp logs show -g "$rg" -n "$app" \
+                --type console --format text --follow false --tail 300 \
+                >"$tmp/$role.log" 2>"$tmp/error"; then
+              python3 - "$tmp/$role.log" "$role" <<'PY'
+          import collections, pathlib, re, sys
+          text=pathlib.Path(sys.argv[1]).read_text(encoding="utf-8",errors="replace")
+          patterns={
+              "LANGUAGE_REJECTED":r"unsupported.{0,20}language|language.{0,20}not supported",
+              "CONFIG_NOT_FOUND":r"grading configuration.{0,40}not found|unknown grading template",
+              "GRADER_POST_REJECTED":r"grader rejected|post /api/v1/submissions.{0,80}failed",
+              "EMPTY_GITHUB_SNAPSHOT":r"GITHUB_SNAPSHOT_EMPTY|snapshot.{0,30}empty",
+              "TIMEOUT":r"timed out|timeout|read timed out",
+              "NETWORK_UNAVAILABLE":r"connection refused|connectexception|unavailable while",
+              "API_DISPATCH_FAILED":r"dispatch failed|unexpected dispatch failure",
+              "GRADER_PIPELINE_FAILED":r"pipeline failed|failed to produce results",
+              "GRADER_EXCEPTION":r"error grading submission",
+              "SANDBOX_OR_PREFLIGHT":r"sandbox creation failed|preflight.{0,30}failed",
+              "HTTP_ERROR":r"http (400|401|403|404|422|500|502|503)"
+          }
+          counters=collections.Counter()
+          for line in text.splitlines():
+              for category,pattern in patterns.items():
+                  if re.search(pattern,line,re.IGNORECASE):
+                      counters[category]+=1
+                      break
+          print(f"AZURE_TAIL role={sys.argv[2]} inspected_lines={len(text.splitlines())}")
+          for kind,n in sorted(counters.items()):
+              print(f"AZURE_TAIL role={sys.argv[2]} kind={kind} events={n}")
+          PY
+            else
+              echo "::notice::Recent console tail not accessible for role=$role"
+            fi
+          done
+          echo "Diagnostic completed. No raw Azure log lines were published."
+      - name: Always revoke Azure CLI session
+        if: always()
+        shell: bash
+        run: |
+          az logout >/dev/null 2>&1 || true

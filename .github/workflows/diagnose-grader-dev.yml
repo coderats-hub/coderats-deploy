@@ -145,6 +145,61 @@ jobs:
             echo "::notice::No queryable Log Analytics workspace found; attempting limited safe tail."
           fi
 
+          # Follow-up: classify HTTP status and grader ingress using fixed KQL projections.
+          # This never returns raw messages, paths, usernames, IDs or payloads.
+          if [[ "$workspace" =~ ^[0-9a-fA-F-]{36}$ ]]; then
+            cat >"$tmp/http.kql" <<'KQL'
+          union isfuzzy=true ContainerAppConsoleLogs_CL, ContainerAppConsoleLogs
+          | where TimeGenerated between (datetime(2026-10-25T16:30:00Z) .. datetime(2026-10-25T19:30:00Z))
+          | extend App=tostring(column_ifexists("ContainerAppName_s",column_ifexists("ContainerAppName","")))
+          | where App in ("ca-coderats-base-api-dev","ca-coderats-grader-dev")
+          | extend Message=tolower(tostring(column_ifexists("Log_s",column_ifexists("Log",""))))
+          | extend Status=extract(@"http\s+([0-9]{3})",1,Message)
+          | extend Kind=case(
+              App=="ca-coderats-base-api-dev" and Message contains "[grader]" and Message contains "post" and Message contains "failed", "API_POST_FAILURE",
+              App=="ca-coderats-grader-dev" and Message contains "submission request received", "GRADER_REQUEST_RECEIVED",
+              App=="ca-coderats-grader-dev" and Message contains "submission rejected", "GRADER_REQUEST_REJECTED",
+              App=="ca-coderats-grader-dev" and Message contains "submission created and grading task scheduled", "GRADER_REQUEST_ACCEPTED",
+              App=="ca-coderats-grader-dev" and Message contains "error grading submission", "GRADER_EXECUTION_ERROR",
+              "OTHER")
+          | where Kind!="OTHER"
+          | extend HttpStatus=iif(Kind=="API_POST_FAILURE",iff(Status in ("400","401","403","404","409","422","429","500","502","503","504"),Status,"UNKNOWN"),"NOT_APPLICABLE")
+          | summarize Events=count() by Slot=bin(TimeGenerated,15m), Kind, HttpStatus
+          | project SlotUTC=format_datetime(Slot,"yyyy-MM-dd HH:mm"), Kind, HttpStatus, Events
+          | order by SlotUTC asc
+          KQL
+            if az monitor log-analytics query --workspace "$workspace" \
+                --analytics-query "$(cat "$tmp/http.kql")" -o json >"$tmp/http.json" 2>"$tmp/error"; then
+              python3 - "$tmp/http.json" <<'PY'
+          import json, re, sys
+          allowed={"API_POST_FAILURE","GRADER_REQUEST_RECEIVED","GRADER_REQUEST_REJECTED","GRADER_REQUEST_ACCEPTED","GRADER_EXECUTION_ERROR"}
+          try:
+              data=json.load(open(sys.argv[1],encoding="utf-8"))
+              rows=data if isinstance(data,list) else []
+              if isinstance(data,dict) and isinstance(data.get("tables"),list):
+                  rows=[]
+                  for table in data["tables"]:
+                      columns=[x["name"] for x in table["columns"]]
+                      rows += [dict(zip(columns, r)) for r in table.get("rows",[])]
+              for row in rows:
+                  kind=row.get("Kind")
+                  http=str(row.get("HttpStatus","UNKNOWN"))
+                  slot=str(row.get("SlotUTC",""))
+                  if kind not in allowed or http not in {"400","401","403","404","409","422","429","500","502","503","504","UNKNOWN","NOT_APPLICABLE"}:
+                      continue
+                  if not re.fullmatch(r"2026-10-25 1[6-9]:[0-5][0-9]",slot):
+                      continue
+                  count=int(row.get("Events",0))
+                  if 0 <= count <= 1000000:
+                      print(f"AZURE_HTTP utc={slot} kind={kind} status={http} count={count}")
+          except (OSError,ValueError,KeyError,TypeError):
+              print("AZURE_HTTP unavailable_response")
+          PY
+            else
+              echo "::notice::HTTP diagnostics query unavailable"
+            fi
+          fi
+
           # Historical events may no longer be in a running replica's last 300 lines.
           # Tail is secondary and is processed locally without leaking raw lines.
           for app in "$api" "$grader"; do

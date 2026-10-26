@@ -1,6 +1,7 @@
 name: Deploy CodeRats optimization release to DEV
 # Candidate source exclusively from private release/optimizations branches.
 # Verified with public workflow 40420260150 (all three pinned source checks succeeded).
+# Retry: use Dockerfile.api available in pinned grader private source.
 # This file's first creation is inert. Only the explicit verified commit
 # ci(dev): deploy optimizations release is authorized to deploy.
 on:

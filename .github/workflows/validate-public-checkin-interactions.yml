@@ -1,0 +1,67 @@
+name: Validate public check-in interaction permissions
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/validate-public-checkin-interactions.yml]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    environment: dev
+    timeout-minutes: 50
+    steps:
+      - name: Issue read-only private API token
+        id: token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.CODERATS_DEPLOY_APP_ID }}
+          private-key: ${{ secrets.CODERATS_DEPLOY_APP_PRIVATE_KEY }}
+          owner: coderats-hub
+          repositories: api-coderats-base
+          permission-contents: read
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          repository: coderats-hub/api-coderats-base
+          ref: 346e2a2e6e98b4012cd956a8ff39d2f8a544b4c7
+          token: ${{ steps.token.outputs.token }}
+          persist-credentials: false
+          path: source
+      - name: Verify candidate SHA
+        run: test "$(git -C source rev-parse HEAD)" = 346e2a2e6e98b4012cd956a8ff39d2f8a544b4c7
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Maven verification and regression tests
+        working-directory: source
+        run: |
+          set -euo pipefail
+          chmod +x ./mvnw
+          if ! ./mvnw --batch-mode verify >"$RUNNER_TEMP/verify.log" 2>&1; then
+            echo "::error::Private API Maven verification failed (sanitized test diagnostics)"
+            python3 - "$RUNNER_TEMP/verify.log" <<'PY'
+          import pathlib,re,sys,xml.etree.ElementTree as ET
+          lines=pathlib.Path(sys.argv[1]).read_text(errors='replace').splitlines()
+          for line in lines:
+              m=re.search(r'([A-Za-z0-9_]+\.java):\[(\d+),(\d+)\]',line)
+              if '[ERROR]' in line and m:print('Compiler:',*m.groups())
+              if 'Failed to execute goal' in line: print('Maven goal failure')
+          for f in sorted(pathlib.Path('target/surefire-reports').glob('TEST-*.xml')):
+              try:
+                  root=ET.parse(f).getroot()
+                  for case in root.iter('testcase'):
+                      failures=[n for n in case if n.tag in ('failure','error')]
+                      if failures:
+                          print('Failed:',re.sub('[^a-zA-Z0-9_.-]','',case.attrib.get('classname','').split('.')[-1]),case.attrib.get('name','unknown')[:90],
+                                'kind:',failures[0].attrib.get('type','unknown').split('.')[-1])
+              except Exception: pass
+          PY
+            exit 1
+          fi
+          echo "Maven verify: PASS" >> "$GITHUB_STEP_SUMMARY"
+      - name: Remove private checkout
+        if: always()
+        run: rm -rf source

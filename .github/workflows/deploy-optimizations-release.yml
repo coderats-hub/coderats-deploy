@@ -59,7 +59,7 @@ jobs:
           az containerapp show -g "$rg" -n "$app" --query name -o tsv >/dev/null
           image="$acr.azurecr.io/api-grader-coderats:1bba810073fdd62e072c05e759a41bc85b3fe6ed-$GITHUB_RUN_ID"
           az acr login -n "$acr" --output none
-          docker build -f src/Dockerfile.cloud -t "$image" src >"$RUNNER_TEMP/grader-build.log" 2>&1 ||
+          docker build -f src/Dockerfile.api -t "$image" src >"$RUNNER_TEMP/grader-build.log" 2>&1 ||
             { echo "::error::Grader image build failed"; exit 1; }
           docker push "$image" >"$RUNNER_TEMP/grader-push.log" 2>&1 ||
             { echo "::error::Grader image upload failed"; exit 1; }

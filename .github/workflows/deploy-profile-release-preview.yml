@@ -90,6 +90,14 @@ jobs:
           allowed = {"feed.test.tsx", "shell-search.test.tsx", "member-search.test.ts"}
           try:
               report = json.loads(pathlib.Path(sys.argv[1]).read_text())
+              print("Sanitized Vitest run:", {
+                  "success": bool(report.get("success")),
+                  "total": report.get("numTotalTests", -1),
+                  "passed": report.get("numPassedTests", -1),
+                  "suites": len(report.get("testResults", [])),
+                  "pending": report.get("numPendingTests", -1),
+              })
+
               for suite in report.get("testResults", []):
                   file_name = os.path.basename(suite.get("name",""))
                   failures = [t for t in suite.get("assertionResults",[]) if t.get("status")=="failed"]

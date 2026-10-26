@@ -96,6 +96,8 @@ jobs:
                   "passed": report.get("numPassedTests", -1),
                   "suites": len(report.get("testResults", [])),
                   "pending": report.get("numPendingTests", -1),
+                  "unhandled": len(report.get("unhandledErrors", [])),
+                  "suite_errors": sum(bool(t.get("message")) for t in report.get("testResults", [])),
               })
 
               for suite in report.get("testResults", []):

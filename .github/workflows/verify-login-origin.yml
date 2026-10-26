@@ -1,0 +1,37 @@
+name: Verify public OAuth domain after API rollout
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/verify-login-origin.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: Verify coderats.club API origin and GitHub OAuth state cookie
+        run: |
+          set -euo pipefail
+          origin=https://coderats.club
+          api_status="$(curl --silent --show-error --max-time 12 -o /dev/null -w '%{http_code}' "$origin/api/v1/auth/me")"
+          [[ "$api_status" == "401" ]] || { echo "::error::Unauthenticated API proxy must return 401"; exit 1; }
+          headers="$RUNNER_TEMP/login-headers"
+          status="$(curl --silent --show-error --max-time 12 -o /dev/null -D "$headers" -w '%{http_code}' "$origin/oauth2/authorization/github")"
+          [[ "$status" == "302" ]] || { echo "::error::OAuth start did not redirect to GitHub"; exit 1; }
+          python3 - "$headers" <<'PY'
+          import pathlib,sys,urllib.parse
+          raw=pathlib.Path(sys.argv[1]).read_text(errors="replace").splitlines()
+          locs=[line.split(":",1)[1].strip() for line in raw if line.lower().startswith("location:")]
+          cookies=[line.split(":",1)[1].strip().lower() for line in raw if line.lower().startswith("set-cookie:")]
+          if not locs: sys.exit("Missing OAuth redirect")
+          u=urllib.parse.urlsplit(locs[-1])
+          qs=urllib.parse.parse_qs(u.query)
+          if u.hostname != "github.com" or qs.get("redirect_uri") != ["https://coderats.club/login/oauth2/code/github"]:
+              sys.exit("Invalid public callback URL")
+          if not any(x.startswith("jsessionid=") and "secure" in x and "httponly" in x and "domain=" not in x for x in cookies):
+              sys.exit("Missing host-only secure JSESSIONID")
+          print("Public OAuth redirect and first-party session cookie verified")
+          PY
+          echo "First-party API proxy and GitHub OAuth state: PASS" >> "$GITHUB_STEP_SUMMARY"

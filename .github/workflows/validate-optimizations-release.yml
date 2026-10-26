@@ -18,7 +18,7 @@ jobs:
         include:
           - service: frontend
             repository: web-coderats-base
-            sha: f709a82d01c46f4e6e7d481027bce171ea7697f8
+            sha: acf7e9c2daca38b37b4bcbc8c68edf94de8c33e0
           - service: api
             repository: api-coderats-base
             sha: f1d8b728d307935418cb8235d4281c538f04265f

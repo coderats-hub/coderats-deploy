@@ -150,7 +150,7 @@ jobs:
           lines = pathlib.Path(sys.argv[1]).read_text(errors='replace').splitlines()
           allowed = {'direct-messages.tsx', 'contract.ts', 'direct-messages.test.tsx', 'dm-contract.test.ts'}
           for line in lines:
-              m = re.search(r'([A-Za-z0-9._-]+\\.tsx?)\\((\\d+),(\\d+)\\): error (TS\\d+)', line)
+              m = re.search(r'([A-Za-z0-9._-]+\.tsx?)\((\d+),(\d+)\): error (TS\d+)', line)
               if m:
                   filename, row, col, code = m.groups()
                   print('Sanitized TypeScript:', filename if filename in allowed else 'another-file', row, col, code)

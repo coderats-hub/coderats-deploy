@@ -171,12 +171,12 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: coderats-hub/web-coderats-base
-          ref: f709a82d01c46f4e6e7d481027bce171ea7697f8
+          ref: acf7e9c2daca38b37b4bcbc8c68edf94de8c33e0
           token: ${{ steps.token.outputs.token }}
           persist-credentials: false
           path: src
       - name: Verify source SHA
-        run: test "$(git -C src rev-parse HEAD)" = "f709a82d01c46f4e6e7d481027bce171ea7697f8"
+        run: test "$(git -C src rev-parse HEAD)" = "acf7e9c2daca38b37b4bcbc8c68edf94de8c33e0"
       - name: Login DEV with public workflow OIDC
         uses: azure/login@v2
         with:
@@ -195,7 +195,7 @@ jobs:
           [[ "$WEB_APP" =~ ^[a-z0-9-]+-dev$ && "$WEB_APP" == *web* ]] || exit 1
           [[ "$API_ORIGIN" == https://* ]] || exit 1
           az containerapp show -g "$rg" -n "$WEB_APP" --query name -o tsv >/dev/null
-          image="$acr.azurecr.io/web-coderats-base:f709a82d01c46f4e6e7d481027bce171ea7697f8-$GITHUB_RUN_ID"
+          image="$acr.azurecr.io/web-coderats-base:acf7e9c2daca38b37b4bcbc8c68edf94de8c33e0-$GITHUB_RUN_ID"
           az acr login -n "$acr" --output none
           docker build -f src/Dockerfile --build-arg "NEXT_PUBLIC_API_URL=https://coderats.club" \
             --build-arg "API_PROXY_TARGET=$API_ORIGIN" -t "$image" src >"$RUNNER_TEMP/web-build.log" 2>&1 ||
@@ -212,7 +212,7 @@ jobs:
             if [[ "$actual" == "$image" && -n "$latest" && "$latest" == "$ready" ]] &&
                curl --fail --silent --show-error --max-time 12 "https://$fqdn/health" >/dev/null 2>&1; then
               echo "Frontend DEV ready: $ready" >> "$GITHUB_STEP_SUMMARY"
-              echo "Source branch: release/optimizations; sha: f709a82d01c46f4e6e7d481027bce171ea7697f8" >> "$GITHUB_STEP_SUMMARY"
+              echo "Source branch: release/optimizations; sha: acf7e9c2daca38b37b4bcbc8c68edf94de8c33e0" >> "$GITHUB_STEP_SUMMARY"
               exit 0
             fi
             sleep 10

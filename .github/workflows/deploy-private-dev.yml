@@ -274,7 +274,20 @@ jobs:
           docker push "$image" >"$runlog" 2>&1 || {
             echo "::error::Failed to push image to DEV ACR"; exit 1;
           }
-          az containerapp update -g "$rg" -n "$app" --image "$image" --output none
+          # FRONTEND_URL is the canonical OAuth success/failure return location,
+          # not the API origin. Keep legacy DEV frontend in exact credentialed
+          # CORS allowlist while users migrate bookmarks to coderats.club.
+          # Keep session SameSite=Lax: durable auth also requires that the API
+          # be bound to api.coderats.club (same-site), not just cross-site CORS.
+          if [[ "$SERVICE" == "api" ]]; then
+            az containerapp update -g "$rg" -n "$app" --image "$image" \
+              --set-env-vars \
+              "FRONTEND_URL=https://coderats.club" \
+              "CORS_ALLOWED_ORIGINS=https://coderats.club,https://www.coderats.club,https://ca-coderats-base-web-dev.wittyforest-08a02f79.eastus.azurecontainerapps.io" \
+              --output none
+          else
+            az containerapp update -g "$rg" -n "$app" --image "$image" --output none
+          fi
           fqdn="$(az containerapp show -g "$rg" -n "$app" --query properties.configuration.ingress.fqdn -o tsv)"
           [[ "$fqdn" =~ ^[a-zA-Z0-9.-]+$ ]] || exit 1
           for i in $(seq 1 30); do

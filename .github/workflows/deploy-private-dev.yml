@@ -4,6 +4,7 @@ name: Deploy CodeRats private services to DEV
 # No workflow is called from a private repository.
 on:
   # Explicitly authorized beta4 API release after milestone/test reconciliation.
+  # CodeRats authenticated member search endpoint for dashboard discovery.
   push:
     branches: [main]
     paths:

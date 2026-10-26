@@ -34,12 +34,12 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: coderats-hub/api-grader-coderats
-          ref: c13013c12db4cbbe89a1d65967a2867acffd38b1
+          ref: 25e74626454a55e7e69bf7111e6243bf907d99c2
           token: ${{ steps.token.outputs.token }}
           persist-credentials: false
           path: src
       - name: Verify source SHA
-        run: test "$(git -C src rev-parse HEAD)" = "c13013c12db4cbbe89a1d65967a2867acffd38b1"
+        run: test "$(git -C src rev-parse HEAD)" = "25e74626454a55e7e69bf7111e6243bf907d99c2"
       - name: Login DEV with public workflow OIDC
         uses: azure/login@v2
         with:
@@ -56,7 +56,7 @@ jobs:
           app=ca-coderats-grader-dev
           [[ "$(az account show --query id -o tsv)" == "$SUBSCRIPTION_ID" ]] || exit 1
           az containerapp show -g "$rg" -n "$app" --query name -o tsv >/dev/null
-          image="$acr.azurecr.io/api-grader-coderats:c13013c12db4cbbe89a1d65967a2867acffd38b1-$GITHUB_RUN_ID"
+          image="$acr.azurecr.io/api-grader-coderats:25e74626454a55e7e69bf7111e6243bf907d99c2-$GITHUB_RUN_ID"
           az acr login -n "$acr" --output none
           docker build -f src/Dockerfile.cloud -t "$image" src >"$RUNNER_TEMP/grader-build.log" 2>&1 ||
             { echo "::error::Grader image build failed"; exit 1; }
@@ -69,7 +69,7 @@ jobs:
             ready="$(az containerapp show -g "$rg" -n "$app" --query properties.latestReadyRevisionName -o tsv)"
             if [[ "$actual" == "$image" && -n "$latest" && "$ready" == "$latest" ]]; then
               echo "Grader DEV revision ready: $ready" >> "$GITHUB_STEP_SUMMARY"
-              echo "Source branch: release/optimizations; sha: c13013c12db4cbbe89a1d65967a2867acffd38b1" >> "$GITHUB_STEP_SUMMARY"
+              echo "Source branch: release/optimizations; sha: 25e74626454a55e7e69bf7111e6243bf907d99c2" >> "$GITHUB_STEP_SUMMARY"
               exit 0
             fi
             sleep 10

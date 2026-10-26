@@ -18,7 +18,7 @@ jobs:
         include:
           - service: api
             repo: api-coderats-base
-            source_sha: 2de0513f6be933b268b200d6e52c25ee039f7808
+            source_sha: b9d04dc9e941f9d0c92cb2cf860ca7854a2a952a
           - service: web
             repo: web-coderats-base
             source_sha: 6d2c6fca432b8d64f231a8c07dfb74835b16e0ea

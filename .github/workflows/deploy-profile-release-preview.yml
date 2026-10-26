@@ -96,6 +96,15 @@ jobs:
                   if failures:
                       label = file_name if re.fullmatch(r"[A-Za-z0-9._-]{1,100}\.test\.tsx?", file_name) else "another-private-test"
                       print(f"Sanitized Vitest suite={label} failed={len(failures)}")
+                      if file_name == "member-social.test.tsx":
+                          for failed in failures:
+                              name=str(failed.get("fullName",""))
+                              category=(
+                                  "OWN_FOLLOWING_POPUP" if "own following list" in name else
+                                  "OTHER_PROFILE_FOLLOWERS" if "another member followers" in name else
+                                  "OWN_METRICS" if "own profile" in name else
+                                  "FOLLOW_BLOCK_CONTROLS" if "follows, unfollows" in name else "OTHER")
+                              print(f"Sanitized member-social case={category}")
                   elif suite.get("status")=="failed":
                       label = file_name if re.fullmatch(r"[A-Za-z0-9._-]{1,100}\.test\.tsx?", file_name) else "another-private-test"
                       print(f"Sanitized Vitest suite={label} failed_at_suite_level")

@@ -94,10 +94,10 @@ jobs:
                   file_name = os.path.basename(suite.get("name",""))
                   failures = [t for t in suite.get("assertionResults",[]) if t.get("status")=="failed"]
                   if failures:
-                      label = file_name if re.fullmatch(r"[A-Za-z0-9._-]{1,100}\\.test\\.tsx?", file_name) else "another-private-test"
+                      label = file_name if re.fullmatch(r"[A-Za-z0-9._-]{1,100}\.test\.tsx?", file_name) else "another-private-test"
                       print(f"Sanitized Vitest suite={label} failed={len(failures)}")
                   elif suite.get("status")=="failed":
-                      label = file_name if re.fullmatch(r"[A-Za-z0-9._-]{1,100}\\.test\\.tsx?", file_name) else "another-private-test"
+                      label = file_name if re.fullmatch(r"[A-Za-z0-9._-]{1,100}\.test\.tsx?", file_name) else "another-private-test"
                       print(f"Sanitized Vitest suite={label} failed_at_suite_level")
               print(f"Sanitized Vitest totals failed_tests={report.get('numFailedTests','unknown')}, failed_suites={report.get('numFailedTestSuites','unknown')}")
           except (ValueError, OSError, TypeError, KeyError):

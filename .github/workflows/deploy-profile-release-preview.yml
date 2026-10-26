@@ -80,7 +80,8 @@ jobs:
       - name: Run private frontend tests
         working-directory: app-src
         env:
-          NEXT_PUBLIC_API_URL: ${{ vars.NEXT_PUBLIC_API_URL }}
+          NEXT_PUBLIC_API_URL: https://coderats.club
+          API_PROXY_TARGET: ${{ vars.NEXT_PUBLIC_API_URL }}
         run: |
           set -euo pipefail
           if ! npm test -- --reporter=json --outputFile="$RUNNER_TEMP/private-release-results.json" >"$RUNNER_TEMP/private-release-tests.log" 2>&1; then
@@ -166,6 +167,9 @@ jobs:
           fi
       - name: Typecheck private frontend
         working-directory: app-src
+        env:
+          NEXT_PUBLIC_API_URL: https://coderats.club
+          API_PROXY_TARGET: ${{ vars.NEXT_PUBLIC_API_URL }}
         run: |
           set -euo pipefail
           if ! npx tsc --noEmit >"$RUNNER_TEMP/private-release-types.log" 2>&1; then
@@ -185,7 +189,8 @@ jobs:
       - name: Build private frontend
         working-directory: app-src
         env:
-          NEXT_PUBLIC_API_URL: ${{ vars.NEXT_PUBLIC_API_URL }}
+          NEXT_PUBLIC_API_URL: https://coderats.club
+          API_PROXY_TARGET: ${{ vars.NEXT_PUBLIC_API_URL }}
         run: |
           set -euo pipefail
           if ! npm run build -- --webpack >"$RUNNER_TEMP/private-release-build.log" 2>&1; then
@@ -216,7 +221,7 @@ jobs:
           image="$registry.azurecr.io/web-coderats-base:c8a9ba8174cacb7a99e5f2a8064eed89c3eb3cd6-$GITHUB_RUN_ID"
           az acr login -n "$registry" --output none
           log="$RUNNER_TEMP/private-release-docker.log"
-          if ! docker build -f app-src/Dockerfile --build-arg "NEXT_PUBLIC_API_URL=$API_ORIGIN" -t "$image" app-src >"$log" 2>&1; then
+          if ! docker build -f app-src/Dockerfile --build-arg "NEXT_PUBLIC_API_URL=https://coderats.club" --build-arg "API_PROXY_TARGET=$API_ORIGIN" -t "$image" app-src >"$log" 2>&1; then
             echo "::error::Private frontend Docker build failed. Private logs suppressed."
             exit 1
           fi

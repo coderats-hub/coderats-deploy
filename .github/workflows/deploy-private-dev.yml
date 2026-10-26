@@ -5,7 +5,7 @@ name: Deploy CodeRats private services to DEV
 on:
   # Explicitly authorized beta4 API release after milestone/test reconciliation.
   # CodeRats authenticated member search endpoint for dashboard discovery.
-  # Release: verified @mentions in colony comments and group chats, with notification and test fixes.
+  # Release: verified member mentions and notification schema parity for H2 and PostgreSQL.
   push:
     branches: [main]
     paths:

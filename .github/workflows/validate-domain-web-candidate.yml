@@ -1,0 +1,157 @@
+name: Validate coderats.club frontend candidate
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/validate-domain-web-candidate.yml]
+permissions:
+  contents: read
+jobs:
+  candidate:
+    if: github.repository == 'coderats-hub/coderats-deploy' && github.ref == 'refs/heads/main'
+    name: "Verify private candidate ${{ matrix.service }}"
+    runs-on: ubuntu-latest
+    environment: dev
+    timeout-minutes: 65
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - service: web
+            repo: web-coderats-base
+            source_sha: 5a802f9f473b47fa57cf769a4b82b2e06081c1dd
+    steps:
+      - name: Check protected candidate configuration
+        env:
+          APP_ID: ${{ vars.CODERATS_DEPLOY_APP_ID }}
+          APP_KEY: ${{ secrets.CODERATS_DEPLOY_APP_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          [[ -n "$APP_ID" && -n "$APP_KEY" ]] || { echo "::error::Protected app read token configuration unavailable"; exit 1; }
+      - name: Issue read-only GitHub App token
+        id: access
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.CODERATS_DEPLOY_APP_ID }}
+          private-key: ${{ secrets.CODERATS_DEPLOY_APP_PRIVATE_KEY }}
+          owner: coderats-hub
+          repositories: ${{ matrix.repo }}
+          permission-contents: read
+      - name: Checkout immutable private candidate
+        uses: actions/checkout@v4
+        with:
+          repository: coderats-hub/${{ matrix.repo }}
+          ref: ${{ matrix.source_sha }}
+          token: ${{ steps.access.outputs.token }}
+          persist-credentials: false
+          fetch-depth: 1
+          path: app-src
+      - name: Ensure exact tested source
+        env:
+          EXPECTED: ${{ matrix.source_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$(git -C app-src rev-parse HEAD)" == "$EXPECTED" ]] || exit 1
+      - name: Prepare Java 21
+        if: matrix.service == 'api'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Run private Maven verification
+        if: matrix.service == 'api'
+        working-directory: app-src
+        run: |
+          set -euo pipefail
+          chmod +x ./mvnw
+          if ! ./mvnw --batch-mode verify >"$RUNNER_TEMP/visibility-maven.log" 2>&1; then
+            echo "::error::API verification failed; reporting sanitized diagnostics"
+            python3 - "$RUNNER_TEMP/visibility-maven.log" <<'PY'
+          import pathlib,re,sys,xml.etree.ElementTree as ET
+          lines=pathlib.Path(sys.argv[1]).read_text(errors="replace").splitlines()
+          for s in lines:
+              m=re.search(r'([A-Za-z0-9_]+\.java):\[(\d+),(\d+)\](?:.*)',s)
+              if m and '[ERROR]' in s: print('Compiler issue:', *m.groups())
+          for s in lines:
+              if 'Failed to execute goal' in s: print('Maven goal failure:', re.search(r'org\.[A-Za-z0-9.:-]+:[A-Za-z0-9._-]+',s).group(0) if re.search(r'org\.[A-Za-z0-9.:-]+:[A-Za-z0-9._-]+',s) else 'unspecified')
+          reports=pathlib.Path('target/surefire-reports')
+          for f in sorted(reports.glob('TEST-*.xml')):
+              try:
+                  root=ET.parse(f).getroot()
+                  fail=int(root.get('failures','0'))+int(root.get('errors','0'))
+                  if fail: print('JUnit failed class:',re.sub(r'[^A-Za-z0-9_.-]','',root.get('name','').split('.')[-1]),'cases:',fail)
+              except Exception: pass
+          for cat,term in [('FLYWAY','FlywayException'),('DATABASE','JdbcSQL'),('APPLICATION_CONTEXT','Failed to load ApplicationContext'),('DOCKER','Could not find a valid Docker environment')]:
+              if any(term in line for line in lines):print('Category:',cat)
+          PY
+            exit 1
+          fi
+          echo "API Maven verify passed."
+      - name: Prepare Node 24
+        if: matrix.service == 'web'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Install private web dependencies
+        if: matrix.service == 'web'
+        working-directory: app-src
+        run: |
+          set -euo pipefail
+          if ! npm ci --no-audit --no-fund >"$RUNNER_TEMP/visibility-install.log" 2>&1; then
+            echo "::error::Private dependency installation failed; logs suppressed"
+            exit 1
+          fi
+      - name: Run private frontend tests
+        if: matrix.service == 'web'
+        working-directory: app-src
+        run: |
+          set -euo pipefail
+          if ! npm test -- --reporter=json --outputFile="$RUNNER_TEMP/visibility-vitest.json" >"$RUNNER_TEMP/visibility-vitest.log" 2>&1; then
+            echo "::error::Frontend tests failed; sanitized report"
+            python3 - "$RUNNER_TEMP/visibility-vitest.json" <<'PY'
+          import json,pathlib,sys,re
+          try:
+              data=json.loads(pathlib.Path(sys.argv[1]).read_text())
+              print('Vitest totals',data.get('numTotalTests'),data.get('numPassedTests'),data.get('numFailedTests'))
+              for suite in data.get('testResults',[]):
+                  failed=[t for t in suite.get('assertionResults',[]) if t.get('status')=='failed']
+                  if failed or suite.get('status')=='failed':
+                      name=pathlib.Path(suite.get('name','unknown')).name
+                      if not re.fullmatch(r'[A-Za-z0-9_.-]{1,90}\.test\.tsx?',name):name='private-suite'
+                      print('Vitest failed suite',name,'cases',len(failed))
+          except Exception:
+              print('Vitest test runner failed; report unavailable')
+          PY
+            exit 1
+          fi
+          echo "Frontend tests passed."
+      - name: Typecheck private frontend
+        if: matrix.service == 'web'
+        working-directory: app-src
+        run: |
+          set -euo pipefail
+          if ! npx tsc --noEmit >"$RUNNER_TEMP/visibility-tsc.log" 2>&1; then
+            echo "::error::Frontend TypeScript errors detected"
+            python3 - "$RUNNER_TEMP/visibility-tsc.log" <<'PY'
+          import pathlib,re,sys
+          for s in pathlib.Path(sys.argv[1]).read_text(errors='replace').splitlines():
+              m=re.search(r'([A-Za-z0-9_.-]+\.tsx?)\((\d+),(\d+)\): error (TS\d+)',s)
+              if m: print('TypeScript:',*m.groups())
+          PY
+            exit 1
+          fi
+          echo "Frontend TypeScript passed."
+      - name: Build private frontend
+        if: matrix.service == 'web'
+        working-directory: app-src
+        env:
+          NEXT_PUBLIC_API_URL: ${{ vars.NEXT_PUBLIC_API_URL }}
+        run: |
+          set -euo pipefail
+          if ! npm run build -- --webpack >"$RUNNER_TEMP/visibility-web-build.log" 2>&1; then
+            echo "::error::Frontend build failed; logs suppressed"
+            exit 1
+          fi
+          echo "Frontend build passed."
+      - name: Remove private sources
+        if: always()
+        run: rm -rf app-src

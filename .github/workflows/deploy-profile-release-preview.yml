@@ -56,7 +56,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: coderats-hub/web-coderats-base
-          ref: c8a9ba8174cacb7a99e5f2a8064eed89c3eb3cd6
+          ref: 5ce66b18e0ef05385ce0196e63f484d8990b6a2a
           token: ${{ steps.access.outputs.token }}
           persist-credentials: false
           fetch-depth: 1
@@ -64,7 +64,7 @@ jobs:
       - name: Confirm private source commit
         run: |
           set -euo pipefail
-          test "$(git -C app-src rev-parse HEAD)" = c8a9ba8174cacb7a99e5f2a8064eed89c3eb3cd6
+          test "$(git -C app-src rev-parse HEAD)" = 5ce66b18e0ef05385ce0196e63f484d8990b6a2a
       - name: Prepare Node 24
         uses: actions/setup-node@v4
         with:
@@ -218,7 +218,7 @@ jobs:
           [[ "$(az acr show -n "$registry" -g "$rg" --query loginServer -o tsv)" == "$registry.azurecr.io" ]] || exit 1
           [[ "$WEB_APP" =~ ^[a-z0-9-]+-dev$ && "$WEB_APP" == *web* ]] || exit 1
           az containerapp show -g "$rg" -n "$WEB_APP" --query name -o tsv >/dev/null
-          image="$registry.azurecr.io/web-coderats-base:c8a9ba8174cacb7a99e5f2a8064eed89c3eb3cd6-$GITHUB_RUN_ID"
+          image="$registry.azurecr.io/web-coderats-base:5ce66b18e0ef05385ce0196e63f484d8990b6a2a-$GITHUB_RUN_ID"
           az acr login -n "$registry" --output none
           log="$RUNNER_TEMP/private-release-docker.log"
           if ! docker build -f app-src/Dockerfile --build-arg "NEXT_PUBLIC_API_URL=https://coderats.club" --build-arg "API_PROXY_TARGET=$API_ORIGIN" -t "$image" app-src >"$log" 2>&1; then
@@ -240,7 +240,7 @@ jobs:
                curl --fail --silent --show-error --max-time 12 "https://$fqdn/health" >/dev/null 2>&1; then
               echo "## Frontend release publicado em DEV" >> "$GITHUB_STEP_SUMMARY"
               echo "Branch: \`develop\`" >> "$GITHUB_STEP_SUMMARY"
-              echo "Commit: \`c8a9ba8174cacb7a99e5f2a8064eed89c3eb3cd6\`" >> "$GITHUB_STEP_SUMMARY"
+              echo "Commit: \`5ce66b18e0ef05385ce0196e63f484d8990b6a2a\`" >> "$GITHUB_STEP_SUMMARY"
               echo "Revisão Azure: \`$ready\`" >> "$GITHUB_STEP_SUMMARY"
               echo "Ver perfil: https://$fqdn/app/profile" >> "$GITHUB_STEP_SUMMARY"
               exit 0
@@ -248,6 +248,41 @@ jobs:
             sleep 10
           done
           echo "::error::Released frontend did not reach healthy ready revision"
+          exit 1
+      - name: Smoke test first-party OAuth session and API on coderats.club
+        run: |
+          set -euo pipefail
+          # Never log OAuth state, client IDs, sessions or response headers.
+          # API and web are deployed by distinct jobs; allow the API rollout
+          # to finish before asserting the public callback.
+          for attempt in $(seq 1 45); do
+            headers="$RUNNER_TEMP/first-party-oauth-headers"
+            code="$(curl --silent --show-error --max-time 12 -o /dev/null -D "$headers" -w '%{http_code}' https://coderats.club/oauth2/authorization/github || true)"
+            auth_status="$(curl --silent --show-error --max-time 12 -o /dev/null -w '%{http_code}' https://coderats.club/api/v1/auth/me || true)"
+            if [[ "$code" == "302" && "$auth_status" == "401" ]] &&
+               python3 - "$headers" <<'PY'
+          from pathlib import Path
+          from urllib.parse import urlsplit, parse_qs
+          import sys
+          lines=Path(sys.argv[1]).read_text(errors="replace").splitlines()
+          locs=[line.split(":",1)[1].strip() for line in lines if line.lower().startswith("location:")]
+          cookies=[line.split(":",1)[1].strip() for line in lines if line.lower().startswith("set-cookie:")]
+          if not locs:sys.exit(1)
+          redirect=urlsplit(locs[-1])
+          callback=parse_qs(redirect.query).get("redirect_uri",[None])[0]
+          first_party=any(c.lower().startswith("jsessionid=") and "secure" in c.lower()
+              and "httponly" in c.lower()
+              and "domain=" not in c.lower() for c in cookies)
+          if redirect.hostname!="github.com" or callback!="https://coderats.club/login/oauth2/code/github" or not first_party:
+              sys.exit(1)
+          PY
+            then
+              echo "First-party OAuth callback, host-only session cookie and API proxy smoke passed." >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::First-party public OAuth session smoke failed; check proxy and API callback"
           exit 1
       - name: Remove checked-out private source and logout
         if: always()

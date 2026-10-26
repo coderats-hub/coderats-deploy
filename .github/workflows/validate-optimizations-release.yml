@@ -61,7 +61,7 @@ jobs:
           npm ci --no-audit --no-fund > "$RUNNER_TEMP/npm.log" 2>&1 || { echo "::error::npm ci failed"; exit 1; }
           if ! npm test >"$RUNNER_TEMP/tests.log" 2>&1; then
             echo "::error::frontend tests failed"
-            grep -E 'FAIL|AssertionError|Test Files|Tests ' "$RUNNER_TEMP/tests.log" | tail -30 || true
+            grep -E 'FAIL|AssertionError|expected |Received|❯ tests/|Test Files|Tests ' "$RUNNER_TEMP/tests.log" | tail -45 || true
             exit 1
           fi
           if ! npx tsc --noEmit >"$RUNNER_TEMP/ts.log" 2>&1; then

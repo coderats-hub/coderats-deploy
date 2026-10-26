@@ -24,7 +24,7 @@ jobs:
             sha: f1d8b728d307935418cb8235d4281c538f04265f
           - service: grader
             repository: api-grader-coderats
-            sha: c13013c12db4cbbe89a1d65967a2867acffd38b1
+            sha: 25e74626454a55e7e69bf7111e6243bf907d99c2
     steps:
       - name: Issue short-lived read-only private source token
         id: token
@@ -101,7 +101,7 @@ jobs:
           set -euo pipefail
           python -m pip install --disable-pip-version-check -r requirements.txt >"$RUNNER_TEMP/py-deps.log" 2>&1 || { echo "::error::Grader requirements install failed"; exit 1; }
           python -m compileall -q web autograder sandbox_manager
-          if ! python -m pytest -q tests/unit/test_optimization_cache.py tests/unit/test_template_library_service.py tests/web/test_api_endpoints.py >"$RUNNER_TEMP/py-tests.log" 2>&1; then
+          if ! python -m pytest -q tests/unit/test_optimization_cache.py tests/unit/test_template_library_service.py tests/web/test_api_endpoints.py tests/unit/pipeline/test_ai_batch_step.py >"$RUNNER_TEMP/py-tests.log" 2>&1; then
             echo "::error::Grader tests failed"
             grep -E '^FAILED |^ERROR |failed,|passed,' "$RUNNER_TEMP/py-tests.log" | tail -30 || true
             exit 1

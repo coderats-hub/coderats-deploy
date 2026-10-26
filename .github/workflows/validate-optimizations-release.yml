@@ -1,0 +1,112 @@
+name: Validate CodeRats optimizations candidate
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/validate-optimizations-release.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    name: Validate ${{ matrix.service }} pinned release
+    runs-on: ubuntu-latest
+    environment: dev
+    timeout-minutes: 65
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - service: frontend
+            repository: web-coderats-base
+            sha: d8babf5965bb94ea9c713961e4aa972559a18b87
+          - service: api
+            repository: api-coderats-base
+            sha: 309f14768de29f372e711aae9ec3a669a02aa143
+          - service: grader
+            repository: api-grader-coderats
+            sha: c13013c12db4cbbe89a1d65967a2867acffd38b1
+    steps:
+      - name: Issue short-lived read-only private source token
+        id: token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.CODERATS_DEPLOY_APP_ID }}
+          private-key: ${{ secrets.CODERATS_DEPLOY_APP_PRIVATE_KEY }}
+          owner: coderats-hub
+          repositories: ${{ matrix.repository }}
+          permission-contents: read
+      - name: Checkout exact release candidate SHA
+        uses: actions/checkout@v4
+        with:
+          repository: coderats-hub/${{ matrix.repository }}
+          ref: ${{ matrix.sha }}
+          token: ${{ steps.token.outputs.token }}
+          persist-credentials: false
+          path: src
+      - name: Confirm source SHA
+        run: test "$(git -C src rev-parse HEAD)" = "${{ matrix.sha }}"
+      - name: Setup Node
+        if: matrix.service == 'frontend'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Test and build frontend
+        if: matrix.service == 'frontend'
+        working-directory: src
+        env:
+          NEXT_PUBLIC_API_URL: https://coderats.club
+          API_PROXY_TARGET: ${{ vars.NEXT_PUBLIC_API_URL }}
+        run: |
+          set -euo pipefail
+          npm ci --no-audit --no-fund > "$RUNNER_TEMP/npm.log" 2>&1 || { echo "::error::npm ci failed"; exit 1; }
+          if ! npm test >"$RUNNER_TEMP/tests.log" 2>&1; then
+            echo "::error::frontend tests failed"
+            grep -E 'FAIL|AssertionError|Test Files|Tests ' "$RUNNER_TEMP/tests.log" | tail -30 || true
+            exit 1
+          fi
+          if ! npx tsc --noEmit >"$RUNNER_TEMP/ts.log" 2>&1; then
+            echo "::error::frontend TypeScript validation failed"
+            grep -E 'error TS[0-9]+' "$RUNNER_TEMP/ts.log" | sed -E 's/:.*$//' | tail -25 || true
+            exit 1
+          fi
+          npm run build -- --webpack >"$RUNNER_TEMP/build.log" 2>&1 || { echo "::error::frontend production build failed"; exit 1; }
+          echo "Frontend optimizations: PASS" >> "$GITHUB_STEP_SUMMARY"
+      - name: Setup Java
+        if: matrix.service == 'api'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: API complete Maven verification
+        if: matrix.service == 'api'
+        working-directory: src
+        run: |
+          set -euo pipefail
+          chmod +x mvnw
+          if ! ./mvnw --batch-mode verify >"$RUNNER_TEMP/java.log" 2>&1; then
+            echo "::error::API Maven verify failed"
+            grep -E 'COMPILATION ERROR|\.java:\[|Tests run:|Failures:|Errors:' "$RUNNER_TEMP/java.log" | sed -E 's/(password|token|secret)=[^ ]+/\1=REDACTED/Ig' | tail -35 || true
+            exit 1
+          fi
+          echo "API optimizations: PASS" >> "$GITHUB_STEP_SUMMARY"
+      - name: Setup Python
+        if: matrix.service == 'grader'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Grader compile and regression suite
+        if: matrix.service == 'grader'
+        working-directory: src
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check -r requirements.txt >"$RUNNER_TEMP/py-deps.log" 2>&1 || { echo "::error::Grader requirements install failed"; exit 1; }
+          python -m compileall -q web autograder sandbox_manager
+          if ! python -m pytest -q tests/unit/test_optimization_cache.py tests/unit/test_template_library_service.py tests/web/test_api_endpoints.py >"$RUNNER_TEMP/py-tests.log" 2>&1; then
+            echo "::error::Grader tests failed"
+            grep -E '^FAILED |^ERROR |failed,|passed,' "$RUNNER_TEMP/py-tests.log" | tail -30 || true
+            exit 1
+          fi
+          echo "Grader optimizations: PASS" >> "$GITHUB_STEP_SUMMARY"
+      - name: Remove checked-out private sources
+        if: always()
+        run: rm -rf src

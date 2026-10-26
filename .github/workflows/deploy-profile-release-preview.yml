@@ -115,6 +115,21 @@ jobs:
                                           "MULTIPLE_ELEMENTS" if "Found multiple elements" in failure else
                                           "EXPECTATION_FAILED" if "AssertionError" in failure else "OTHER")
                                   print(f"Sanitized member-social failure_kind={reason}")
+                  if file_name == "dm-management.test.tsx":
+                      for failed in failures:
+                          title=str(failed.get("fullName", ""))
+                          case=("GROUP" if "multi-member" in title else "SEND" if "sends immediately" in title else "OTHER")
+                          print(f"Sanitized DM management case={case}")
+                          for failure in failed.get("failureMessages", [])[:1]:
+                              if not isinstance(failure, str): continue
+                              why=("DUPLICATE" if "Found multiple elements" in failure else
+                                   "MISSING_ROLE" if "Unable to find an accessible element" in failure else
+                                   "MISSING_TEXT" if "Unable to find an element with the text" in failure else
+                                   "EXPECTATION" if "AssertionError" in failure else
+                                   "REQUEST" if "Unexpected route" in failure else "OTHER")
+                              print(f"Sanitized DM management failure={why}")
+                              positions=re.findall(r"dm-management\\.test\\.tsx:(\\d+):\\d+", failure)
+                              if positions: print(f"Sanitized DM management test_line={positions[-1]}")
                   if file_name == "direct-messages.test.tsx":
                       for failed in failures:
                           for failure in failed.get("failureMessages", [])[:1]:

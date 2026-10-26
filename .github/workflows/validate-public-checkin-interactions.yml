@@ -24,12 +24,12 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: coderats-hub/api-coderats-base
-          ref: 346e2a2e6e98b4012cd956a8ff39d2f8a544b4c7
+          ref: ee66722e4b351f955283bc0cc2b7d5c709ed5aae
           token: ${{ steps.token.outputs.token }}
           persist-credentials: false
           path: source
       - name: Verify candidate SHA
-        run: test "$(git -C source rev-parse HEAD)" = 346e2a2e6e98b4012cd956a8ff39d2f8a544b4c7
+        run: test "$(git -C source rev-parse HEAD)" = ee66722e4b351f955283bc0cc2b7d5c709ed5aae
       - name: Set up Java 21
         uses: actions/setup-java@v4
         with:

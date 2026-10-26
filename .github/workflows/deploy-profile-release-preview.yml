@@ -107,7 +107,7 @@ jobs:
                               print(f"Sanitized member-social case={category}")
                               for failure in failed.get("failureMessages", [])[:1]:
                                   if not isinstance(failure, str): continue
-                                  matches=re.findall(r"member-social\\.test\\.tsx:(\\d+):\\d+",failure)
+                                  matches=re.findall(r"member-social\.test\.tsx:(\d+):\d+",failure)
                                   if matches:
                                       print(f"Sanitized member-social test_line={matches[-1]}")
                                   reason=("MISSING_BUTTON" if "Unable to find an accessible element with the role" in failure else

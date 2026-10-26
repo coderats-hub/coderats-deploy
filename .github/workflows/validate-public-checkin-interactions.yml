@@ -57,11 +57,60 @@ jobs:
                       if failures:
                           print('Failed:',re.sub('[^a-zA-Z0-9_.-]','',case.attrib.get('classname','').split('.')[-1]),case.attrib.get('name','unknown')[:90],
                                 'kind:',failures[0].attrib.get('type','unknown').split('.')[-1])
+                          message=failures[0].attrib.get('message','')
+                          status=re.search(r'Status expected:\s*<?(\d+)>?\s*but was:\s*<?(\d+)>?', message)
+                          if status: print('HTTP status expected/actual:',*status.groups())
+                          stack=failures[0].text or ''
+                          origin=re.search(r'PostInteractionIntegrationTest\.java:(\d+)',stack)
+                          if origin: print('Failure test line:',origin.group(1))
               except Exception: pass
           PY
             exit 1
           fi
           echo "Maven verify: PASS" >> "$GITHUB_STEP_SUMMARY"
+      - name: Remove private checkout
+        if: always()
+        run: rm -rf source
+
+  frontend:
+    name: Verify feed remains visible after unrelated interaction 403
+    runs-on: ubuntu-latest
+    environment: dev
+    timeout-minutes: 40
+    steps:
+      - name: Issue read-only private frontend token
+        id: token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.CODERATS_DEPLOY_APP_ID }}
+          private-key: ${{ secrets.CODERATS_DEPLOY_APP_PRIVATE_KEY }}
+          owner: coderats-hub
+          repositories: web-coderats-base
+          permission-contents: read
+      - name: Checkout exact frontend candidate
+        uses: actions/checkout@v4
+        with:
+          repository: coderats-hub/web-coderats-base
+          ref: 13dccb2843de949cdcc464f749d212ddb4827ebc
+          token: ${{ steps.token.outputs.token }}
+          persist-credentials: false
+          path: source
+      - name: Setup Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Tests typecheck and production build
+        working-directory: source
+        env:
+          NEXT_PUBLIC_API_URL: https://coderats.club
+          API_PROXY_TARGET: ${{ vars.NEXT_PUBLIC_API_URL }}
+        run: |
+          set -euo pipefail
+          if ! (npm ci --no-audit --no-fund && npm test && npx tsc --noEmit && npm run build -- --webpack) > "$RUNNER_TEMP/validate.log" 2>&1; then
+            echo "::error::Private frontend validation failed; logs withheld."
+            exit 1
+          fi
+          echo "Frontend tests, TypeScript and build: PASS" >> "$GITHUB_STEP_SUMMARY"
       - name: Remove private checkout
         if: always()
         run: rm -rf source

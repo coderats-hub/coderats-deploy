@@ -5,7 +5,7 @@ name: Deploy CodeRats private services to DEV
 on:
   # Explicitly authorized beta4 API release after milestone/test reconciliation.
   # CodeRats authenticated member search endpoint for dashboard discovery.
-  # Social lists release: PostgreSQL-compatible filtering and stable sorting.
+  # Direct messages release: private one-to-one inbox, durable text and access controls.
   push:
     branches: [main]
     paths:

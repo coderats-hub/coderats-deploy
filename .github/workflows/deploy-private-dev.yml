@@ -5,7 +5,7 @@ name: Deploy CodeRats private services to DEV
 on:
   # Explicitly authorized beta4 API release after milestone/test reconciliation.
   # CodeRats authenticated member search endpoint for dashboard discovery.
-  # Messaging v2 release: group conversations, personal history operations and message edits.
+  # Messaging v2 release: group chats reject mutually blocked participants.
   push:
     branches: [main]
     paths:

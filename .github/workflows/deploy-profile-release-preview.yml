@@ -105,6 +105,16 @@ jobs:
                                   "OWN_METRICS" if "own profile" in name else
                                   "FOLLOW_BLOCK_CONTROLS" if "follows, unfollows" in name else "OTHER")
                               print(f"Sanitized member-social case={category}")
+                              for failure in failed.get("failureMessages", [])[:1]:
+                                  if not isinstance(failure, str): continue
+                                  matches=re.findall(r"member-social\\.test\\.tsx:(\\d+):\\d+",failure)
+                                  if matches:
+                                      print(f"Sanitized member-social test_line={matches[-1]}")
+                                  reason=("MISSING_BUTTON" if "Unable to find an accessible element with the role" in failure else
+                                          "MISSING_TEXT" if "Unable to find an element with the text" in failure else
+                                          "MULTIPLE_ELEMENTS" if "Found multiple elements" in failure else
+                                          "EXPECTATION_FAILED" if "AssertionError" in failure else "OTHER")
+                                  print(f"Sanitized member-social failure_kind={reason}")
                   elif suite.get("status")=="failed":
                       label = file_name if re.fullmatch(r"[A-Za-z0-9._-]{1,100}\.test\.tsx?", file_name) else "another-private-test"
                       print(f"Sanitized Vitest suite={label} failed_at_suite_level")

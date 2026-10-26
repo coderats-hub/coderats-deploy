@@ -128,7 +128,7 @@ jobs:
                                    "EXPECTATION" if "AssertionError" in failure else
                                    "REQUEST" if "Unexpected route" in failure else "OTHER")
                               print(f"Sanitized DM management failure={why}")
-                              positions=re.findall(r"dm-management\\.test\\.tsx:(\\d+):\\d+", failure)
+                              positions=re.findall(r"dm-management\.test\.tsx:(\d+):\d+", failure)
                               if positions: print(f"Sanitized DM management test_line={positions[-1]}")
                   if file_name == "direct-messages.test.tsx":
                       for failed in failures:

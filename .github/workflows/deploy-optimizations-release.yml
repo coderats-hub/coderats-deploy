@@ -1,0 +1,229 @@
+name: Deploy CodeRats optimization release to DEV
+# Candidate source exclusively from private release/optimizations branches.
+# This file's first creation is inert. Only the explicit verified commit
+# ci(dev): deploy optimizations release is authorized to deploy.
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/deploy-optimizations-release.yml]
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  grader:
+    name: Deploy verified Grader candidate
+    if: >-
+      github.repository == 'coderats-hub/coderats-deploy' &&
+      github.ref == 'refs/heads/main' &&
+      github.event.head_commit.message == 'ci(dev): deploy optimizations release'
+    runs-on: ubuntu-latest
+    environment: dev
+    concurrency: coderats-grader-dev-release
+    timeout-minutes: 65
+    steps:
+      - name: Token scoped to Grader source only
+        id: token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.CODERATS_DEPLOY_APP_ID }}
+          private-key: ${{ secrets.CODERATS_DEPLOY_APP_PRIVATE_KEY }}
+          owner: coderats-hub
+          repositories: api-grader-coderats
+          permission-contents: read
+      - name: Check out pinned private Grader candidate
+        uses: actions/checkout@v4
+        with:
+          repository: coderats-hub/api-grader-coderats
+          ref: c13013c12db4cbbe89a1d65967a2867acffd38b1
+          token: ${{ steps.token.outputs.token }}
+          persist-credentials: false
+          path: src
+      - name: Verify source SHA
+        run: test "$(git -C src rev-parse HEAD)" = "c13013c12db4cbbe89a1d65967a2867acffd38b1"
+      - name: Login DEV with public workflow OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Build and deploy pinned Grader image
+        env:
+          SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          set -euo pipefail
+          rg=rg-coderats-base-dev
+          acr=crcoderatsbasedev9e0045
+          app=ca-coderats-grader-dev
+          [[ "$(az account show --query id -o tsv)" == "$SUBSCRIPTION_ID" ]] || exit 1
+          az containerapp show -g "$rg" -n "$app" --query name -o tsv >/dev/null
+          image="$acr.azurecr.io/api-grader-coderats:c13013c12db4cbbe89a1d65967a2867acffd38b1-$GITHUB_RUN_ID"
+          az acr login -n "$acr" --output none
+          docker build -f src/Dockerfile.cloud -t "$image" src >"$RUNNER_TEMP/grader-build.log" 2>&1 ||
+            { echo "::error::Grader image build failed"; exit 1; }
+          docker push "$image" >"$RUNNER_TEMP/grader-push.log" 2>&1 ||
+            { echo "::error::Grader image upload failed"; exit 1; }
+          az containerapp update -g "$rg" -n "$app" --image "$image" --output none
+          for i in $(seq 1 36); do
+            actual="$(az containerapp show -g "$rg" -n "$app" --query 'properties.template.containers[0].image' -o tsv)"
+            latest="$(az containerapp show -g "$rg" -n "$app" --query properties.latestRevisionName -o tsv)"
+            ready="$(az containerapp show -g "$rg" -n "$app" --query properties.latestReadyRevisionName -o tsv)"
+            if [[ "$actual" == "$image" && -n "$latest" && "$ready" == "$latest" ]]; then
+              echo "Grader DEV revision ready: $ready" >> "$GITHUB_STEP_SUMMARY"
+              echo "Source branch: release/optimizations; sha: c13013c12db4cbbe89a1d65967a2867acffd38b1" >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::Grader candidate failed readiness checks"; exit 1
+      - name: Clean private source
+        if: always()
+        run: rm -rf src
+  api:
+    name: Deploy verified Java API candidate
+    needs: grader
+    if: needs.grader.result == 'success'
+    runs-on: ubuntu-latest
+    environment: dev
+    concurrency: coderats-central-dev-api
+    timeout-minutes: 65
+    steps:
+      - name: Token scoped to API source only
+        id: token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.CODERATS_DEPLOY_APP_ID }}
+          private-key: ${{ secrets.CODERATS_DEPLOY_APP_PRIVATE_KEY }}
+          owner: coderats-hub
+          repositories: api-coderats-base
+          permission-contents: read
+      - name: Check out pinned private Java API candidate
+        uses: actions/checkout@v4
+        with:
+          repository: coderats-hub/api-coderats-base
+          ref: f1d8b728d307935418cb8235d4281c538f04265f
+          token: ${{ steps.token.outputs.token }}
+          persist-credentials: false
+          path: src
+      - name: Verify source SHA
+        run: test "$(git -C src rev-parse HEAD)" = "f1d8b728d307935418cb8235d4281c538f04265f"
+      - name: Login DEV with public workflow OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Build and deploy pinned API image
+        env:
+          SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          set -euo pipefail
+          rg=rg-coderats-base-dev; acr=crcoderatsbasedev9e0045
+          app=ca-coderats-base-api-dev
+          [[ "$(az account show --query id -o tsv)" == "$SUBSCRIPTION_ID" ]] || exit 1
+          az containerapp show -g "$rg" -n "$app" --query name -o tsv >/dev/null
+          image="$acr.azurecr.io/api-coderats-base:f1d8b728d307935418cb8235d4281c538f04265f-$GITHUB_RUN_ID"
+          az acr login -n "$acr" --output none
+          docker build -f src/Dockerfile -t "$image" src >"$RUNNER_TEMP/api-build.log" 2>&1 ||
+            { echo "::error::Java API image build failed"; exit 1; }
+          docker push "$image" >"$RUNNER_TEMP/api-push.log" 2>&1 ||
+            { echo "::error::Java API image upload failed"; exit 1; }
+          az containerapp update -g "$rg" -n "$app" --image "$image" --set-env-vars \
+            "FRONTEND_URL=https://coderats.club" \
+            "GITHUB_OAUTH_REDIRECT_URI=https://coderats.club/login/oauth2/code/github" \
+            "CORS_ALLOWED_ORIGINS=https://coderats.club,https://www.coderats.club,https://ca-coderats-base-web-dev.wittyforest-08a02f79.eastus.azurecontainerapps.io" --output none
+          fqdn="$(az containerapp show -g "$rg" -n "$app" --query properties.configuration.ingress.fqdn -o tsv)"
+          [[ "$fqdn" =~ ^[A-Za-z0-9.-]+$ ]] || exit 1
+          for i in $(seq 1 40); do
+            actual="$(az containerapp show -g "$rg" -n "$app" --query 'properties.template.containers[0].image' -o tsv)"
+            latest="$(az containerapp show -g "$rg" -n "$app" --query properties.latestRevisionName -o tsv)"
+            ready="$(az containerapp show -g "$rg" -n "$app" --query properties.latestReadyRevisionName -o tsv)"
+            if [[ "$actual" == "$image" && -n "$latest" && "$latest" == "$ready" ]] &&
+               curl --fail --silent --show-error --max-time 12 "https://$fqdn/actuator/health" >/dev/null 2>&1; then
+              echo "API DEV revision ready: $ready" >> "$GITHUB_STEP_SUMMARY"
+              echo "Source branch: release/optimizations; sha: f1d8b728d307935418cb8235d4281c538f04265f" >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::Java API candidate failed health checks"; exit 1
+      - name: Clean private source
+        if: always()
+        run: rm -rf src
+  frontend:
+    name: Deploy verified frontend candidate
+    needs: api
+    if: needs.api.result == 'success'
+    runs-on: ubuntu-latest
+    environment: dev
+    concurrency: coderats-central-dev-web
+    timeout-minutes: 65
+    steps:
+      - name: Token scoped to private frontend only
+        id: token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.CODERATS_DEPLOY_APP_ID }}
+          private-key: ${{ secrets.CODERATS_DEPLOY_APP_PRIVATE_KEY }}
+          owner: coderats-hub
+          repositories: web-coderats-base
+          permission-contents: read
+      - name: Check out pinned private frontend candidate
+        uses: actions/checkout@v4
+        with:
+          repository: coderats-hub/web-coderats-base
+          ref: f709a82d01c46f4e6e7d481027bce171ea7697f8
+          token: ${{ steps.token.outputs.token }}
+          persist-credentials: false
+          path: src
+      - name: Verify source SHA
+        run: test "$(git -C src rev-parse HEAD)" = "f709a82d01c46f4e6e7d481027bce171ea7697f8"
+      - name: Login DEV with public workflow OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Build and deploy pinned frontend image
+        env:
+          SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          WEB_APP: ${{ vars.AZURE_WEB_CONTAINER_APP }}
+          API_ORIGIN: ${{ vars.NEXT_PUBLIC_API_URL }}
+        run: |
+          set -euo pipefail
+          rg=rg-coderats-base-dev; acr=crcoderatsbasedev9e0045
+          [[ "$(az account show --query id -o tsv)" == "$SUBSCRIPTION_ID" ]] || exit 1
+          [[ "$WEB_APP" =~ ^[a-z0-9-]+-dev$ && "$WEB_APP" == *web* ]] || exit 1
+          [[ "$API_ORIGIN" == https://* ]] || exit 1
+          az containerapp show -g "$rg" -n "$WEB_APP" --query name -o tsv >/dev/null
+          image="$acr.azurecr.io/web-coderats-base:f709a82d01c46f4e6e7d481027bce171ea7697f8-$GITHUB_RUN_ID"
+          az acr login -n "$acr" --output none
+          docker build -f src/Dockerfile --build-arg "NEXT_PUBLIC_API_URL=https://coderats.club" \
+            --build-arg "API_PROXY_TARGET=$API_ORIGIN" -t "$image" src >"$RUNNER_TEMP/web-build.log" 2>&1 ||
+            { echo "::error::Frontend image build failed"; exit 1; }
+          docker push "$image" >"$RUNNER_TEMP/web-push.log" 2>&1 ||
+            { echo "::error::Frontend image upload failed"; exit 1; }
+          az containerapp update -g "$rg" -n "$WEB_APP" --image "$image" --output none
+          fqdn="$(az containerapp show -g "$rg" -n "$WEB_APP" --query properties.configuration.ingress.fqdn -o tsv)"
+          [[ "$fqdn" =~ ^[A-Za-z0-9.-]+$ ]] || exit 1
+          for i in $(seq 1 40); do
+            actual="$(az containerapp show -g "$rg" -n "$WEB_APP" --query 'properties.template.containers[0].image' -o tsv)"
+            latest="$(az containerapp show -g "$rg" -n "$WEB_APP" --query properties.latestRevisionName -o tsv)"
+            ready="$(az containerapp show -g "$rg" -n "$WEB_APP" --query properties.latestReadyRevisionName -o tsv)"
+            if [[ "$actual" == "$image" && -n "$latest" && "$latest" == "$ready" ]] &&
+               curl --fail --silent --show-error --max-time 12 "https://$fqdn/health" >/dev/null 2>&1; then
+              echo "Frontend DEV ready: $ready" >> "$GITHUB_STEP_SUMMARY"
+              echo "Source branch: release/optimizations; sha: f709a82d01c46f4e6e7d481027bce171ea7697f8" >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::Frontend candidate failed health checks"; exit 1
+      - name: Smoke test public login routing
+        run: |
+          set -euo pipefail
+          status="$(curl --silent --show-error --max-time 12 -o /dev/null -w '%{http_code}' https://coderats.club/api/v1/auth/me)"
+          [[ "$status" == "401" ]] || { echo "::error::Authenticated API proxy smoke failed"; exit 1; }
+          echo "Public API proxy smoke passed" >> "$GITHUB_STEP_SUMMARY"
+      - name: Clean private source
+        if: always()
+        run: rm -rf src

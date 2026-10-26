@@ -137,7 +137,8 @@ jobs:
         if: env.DEPLOY_SERVICE == 'web'
         working-directory: app-src
         env:
-          NEXT_PUBLIC_API_URL: ${{ vars.NEXT_PUBLIC_API_URL }}
+          NEXT_PUBLIC_API_URL: https://coderats.club
+          API_PROXY_TARGET: ${{ vars.NEXT_PUBLIC_API_URL }}
         run: |
           set -euo pipefail
           [[ "$NEXT_PUBLIC_API_URL" == https://* ]] || { echo "::error::Missing valid DEV API origin"; exit 1; }
@@ -264,7 +265,7 @@ jobs:
           az acr login -n "$registry" --output none
           runlog="${RUNNER_TEMP}/coderats-image-build.log"
           if [[ "$SERVICE" == "web" ]]; then
-            if ! docker build -f app-src/Dockerfile --build-arg "NEXT_PUBLIC_API_URL=$API_ORIGIN" -t "$image" app-src >"$runlog" 2>&1; then
+            if ! docker build -f app-src/Dockerfile --build-arg "NEXT_PUBLIC_API_URL=https://coderats.club" --build-arg "API_PROXY_TARGET=$API_ORIGIN" -t "$image" app-src >"$runlog" 2>&1; then
               echo "::error::Private web Docker build failed; inspect local runner log."; exit 1
             fi
           else

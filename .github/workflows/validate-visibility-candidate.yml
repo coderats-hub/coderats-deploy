@@ -18,10 +18,10 @@ jobs:
         include:
           - service: api
             repo: api-coderats-base
-            source_sha: ee971573bd2a6315af6eadfcfb974d03b9da6f4a
+            source_sha: 05ffd21d49dccdde2ae81b7a1d19e7f44a05ffc5
           - service: web
             repo: web-coderats-base
-            source_sha: e913ac035987218c9a107775cba7fefe331ef031
+            source_sha: caa3dce9c61339953b593ec02152bbf02cbad6c5
     steps:
       - name: Check protected candidate configuration
         env:

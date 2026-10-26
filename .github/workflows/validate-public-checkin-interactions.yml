@@ -91,7 +91,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: coderats-hub/web-coderats-base
-          ref: 13dccb2843de949cdcc464f749d212ddb4827ebc
+          ref: 5980742daa2bc85121f9d20379b8f3aa67d70722
           token: ${{ steps.token.outputs.token }}
           persist-credentials: false
           path: source

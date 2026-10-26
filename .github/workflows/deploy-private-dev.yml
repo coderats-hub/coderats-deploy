@@ -5,7 +5,7 @@ name: Deploy CodeRats private services to DEV
 on:
   # Explicitly authorized beta4 API release after milestone/test reconciliation.
   # CodeRats authenticated member search endpoint for dashboard discovery.
-  # Social graph release: followers, following, blocks and filtered public feed.
+  # Social graph release: follows, blocks, filtered feed, and matching test contracts.
   push:
     branches: [main]
     paths:

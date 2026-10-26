@@ -174,6 +174,21 @@ jobs:
               'build_goal_failures': sum('Failed to execute goal' in x for x in errors),
           }
           print('Maven failure categories:', kinds)
+          # Strict diagnostic classification, no application log lines or private stack traces.
+          for marker in ['FlywayMigrationIntegrationTest', 'GitHubTokenMigrationPostgresTest']:
+              relevant = [l for l in lines if marker in l]
+              print('Sanitized API category:', marker,
+                    'duplicate_migration' if any('Duplicate Flyway migration' in l for l in relevant) else
+                    'docker_unavailable' if any('Docker' in l or 'docker' in l for l in relevant) else
+                    'database_migration' if any('Migration' in l or 'flyway' in l.lower() for l in relevant) else
+                    'unknown')
+          if any('Could not find a valid Docker environment' in l for l in lines):
+              print('Sanitized API: Docker environment unavailable')
+          if any('Multiple resources found' in l or 'Duplicate Flyway migration' in l for l in lines):
+              print('Sanitized API: duplicate migration resource')
+          for l in lines:
+              if 'FlywayMigrationIntegrationTest' in l and ('AssertionFailedError' in l or 'expected:' in l):
+                  print('Sanitized API: migration_integrity_assertion')
           for l in errors:
               if 'Tests run:' in l:
                   test = re.search(r'(?:-- in |- in )([A-Za-z0-9_.$]+)', l)

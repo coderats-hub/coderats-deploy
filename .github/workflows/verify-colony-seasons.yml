@@ -55,7 +55,7 @@ jobs:
         run: |
           set -euo pipefail
           log="$RUNNER_TEMP/private-api-season-tests.log"
-          if ! (chmod +x mvnw && ./mvnw --batch-mode -Dtest=ColonySeasonLifecycleTest,ColonyControllerApiTest test) >"$log" 2>&1; then
+          if ! (chmod +x mvnw && ./mvnw --batch-mode -Dtest=ColonySeasonLifecycleTest,ColonyAdministrationIntegrationTest,ColonyControllerApiTest test) >"$log" 2>&1; then
             python3 - "$log" <<'PY'
           import pathlib, re, sys
           content=pathlib.Path(sys.argv[1]).read_text(errors="replace")

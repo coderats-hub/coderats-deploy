@@ -1,0 +1,168 @@
+# One-time recovery: restore the last full-featured Grader develop commit
+# after the 2026-10-26 optimizations release overwrote the AI reporter.
+name: Restore full-featured CodeRats Grader to DEV
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/restore-grader-ai-dev.yml
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: coderats-grader-dev-release
+  cancel-in-progress: false
+
+jobs:
+  restore:
+    name: Validate and restore Grader AI to DEV
+    if: >-
+      github.repository == 'coderats-hub/coderats-deploy' &&
+      github.ref == 'refs/heads/main' &&
+      github.event_name == 'push' &&
+      github.event.head_commit.message == 'ci(dev): restore full-featured Grader AI'
+    environment: dev
+    runs-on: ubuntu-latest
+    timeout-minutes: 65
+    steps:
+      - name: Obtain read-only access to pinned private Grader
+        id: token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.CODERATS_DEPLOY_APP_ID }}
+          private-key: ${{ secrets.CODERATS_DEPLOY_APP_PRIVATE_KEY }}
+          owner: coderats-hub
+          repositories: api-grader-coderats
+          permission-contents: read
+
+      - name: Check out verified full-featured Grader (NOT optimizations release)
+        uses: actions/checkout@v4
+        with:
+          repository: coderats-hub/api-grader-coderats
+          ref: 6b897bfa7add314ef5766518974cb71a7e077249
+          token: ${{ steps.token.outputs.token }}
+          persist-credentials: false
+          fetch-depth: 1
+          path: private-grader
+
+      - name: Verify exact source SHA and preserved AI implementation
+        run: |
+          set -euo pipefail
+          test "$(git -C private-grader rev-parse HEAD)" = "6b897bfa7add314ef5766518974cb71a7e077249"
+          grep -Fq 'class AiReporter:' private-grader/autograder/services/report/ai_reporter.py
+          grep -Fq 'client.responses.parse(' private-grader/autograder/services/report/ai_reporter.py
+          grep -Fq 'scope_metadata.get("feedback_mode") == "ai"' private-grader/web/service/grading_service.py
+          echo "Pinned AI-enabled Grader source verified."
+
+      - name: Prepare Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Verify AI reporting and grading without publishing private test logs
+        working-directory: private-grader
+        run: |
+          set -euo pipefail
+          logfile="$RUNNER_TEMP/grader-ai-checks.log"
+          if ! python -m pip install --disable-pip-version-check -r requirements.txt >"$logfile" 2>&1; then
+            echo "::error::Grader dependency setup failed"
+            exit 1
+          fi
+          if ! python -m pytest -q             tests/unit/services/test_ai_reporter.py             tests/unit/services/test_reporter_service.py             tests/unit/pipeline/test_feedback_step_integration.py             tests/web/test_grading_service.py >"$logfile" 2>&1; then
+            echo "::error::Grader AI/regression tests failed. Details retained only on ephemeral runner."
+            exit 1
+          fi
+          # Exercise the explicit CodeRats metadata path, not only reporter unit tests.
+          if ! python - >"$logfile" 2>&1 <<'PY'
+          import asyncio
+          from unittest.mock import patch
+          from web.service.grading_service import GradingRequest, _run_pipeline
+
+          request = GradingRequest(
+              submission_id=1, grading_config_id=1, template_name="input_output",
+              criteria_config={}, setup_config={}, feedback_config={},
+              include_feedback=False, language="python", username="tester",
+              external_user_id="member-1", submission_files={}, locale="pt_br",
+              evaluation_scope={"scoped_files": [], "metadata": {"feedback_mode": "ai"}}
+          )
+          with patch("web.service.grading_service.build_pipeline") as build,                patch("web.service.grading_service.asyncio.to_thread") as run:
+              asyncio.run(_run_pipeline(request))
+              kwargs = build.call_args.kwargs
+              assert kwargs["feedback_mode"] == "ai", kwargs
+              assert kwargs["include_feedback"] is True, kwargs
+          PY
+          then
+            echo "::error::Grader scope-to-AI mode integration check failed"
+            exit 1
+          fi
+          echo "Grader AI reporter and CodeRats explicit AI mode tests passed."
+
+      - name: Sign in to protected DEV Azure subscription
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Check Azure scope and Grader OpenAI key binding before replacing revision
+        env:
+          EXPECTED_SUBSCRIPTION: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          set -euo pipefail
+          rg=rg-coderats-base-dev
+          app=ca-coderats-grader-dev
+          registry=crcoderatsbasedev9e0045
+          test "$(az account show --query id -o tsv)" = "$EXPECTED_SUBSCRIPTION"
+          test "$(az acr show -g "$rg" -n "$registry" --query loginServer -o tsv)" = "$registry.azurecr.io"
+          az containerapp show -g "$rg" -n "$app" --query name -o tsv >/dev/null
+          # Only inspect variable NAMES; never emit environment values or secrets.
+          if ! az containerapp show -g "$rg" -n "$app"             --query 'properties.template.containers[0].env[].name' -o tsv |
+            grep -Fxq 'OPENAI_API_KEY'; then
+            echo "::error::Grader OPENAI_API_KEY environment binding is absent. Refusing an incomplete AI recovery."
+            exit 1
+          fi
+          echo "OpenAI credential binding is present (value not inspected)."
+
+      - name: Build and publish full-featured Grader image to Azure DEV only
+        env:
+          SOURCE_SHA: 6b897bfa7add314ef5766518974cb71a7e077249
+        run: |
+          set -euo pipefail
+          rg=rg-coderats-base-dev
+          acr=crcoderatsbasedev9e0045
+          app=ca-coderats-grader-dev
+          image="$acr.azurecr.io/api-grader-coderats:$SOURCE_SHA-$GITHUB_RUN_ID"
+          az acr login -n "$acr" --output none
+          if ! docker build -f private-grader/Dockerfile.api -t "$image" private-grader             >"$RUNNER_TEMP/grader-restore-build.log" 2>&1; then
+            echo "::error::Grader Docker build failed (private log not exposed)"
+            exit 1
+          fi
+          if ! docker push "$image" >"$RUNNER_TEMP/grader-restore-push.log" 2>&1; then
+            echo "::error::Grader image push failed (private log not exposed)"
+            exit 1
+          fi
+          az containerapp update -g "$rg" -n "$app" --image "$image" --output none
+          fqdn="$(az containerapp show -g "$rg" -n "$app" --query properties.configuration.ingress.fqdn -o tsv)"
+          [[ "$fqdn" =~ ^[a-zA-Z0-9.-]+$ ]] || exit 1
+          for i in $(seq 1 42); do
+            actual="$(az containerapp show -g "$rg" -n "$app" --query 'properties.template.containers[0].image' -o tsv)"
+            latest="$(az containerapp show -g "$rg" -n "$app" --query properties.latestRevisionName -o tsv)"
+            ready="$(az containerapp show -g "$rg" -n "$app" --query properties.latestReadyRevisionName -o tsv)"
+            if [[ "$actual" == "$image" && -n "$latest" && "$latest" == "$ready" ]] &&
+               curl --fail --silent --show-error --max-time 12 "https://$fqdn/openapi.json" >/dev/null 2>&1; then
+              echo "Grader restored to `develop` at `$SOURCE_SHA`." >> "$GITHUB_STEP_SUMMARY"
+              echo "Azure DEV Grader ready: `$latest`." >> "$GITHUB_STEP_SUMMARY"
+              echo "OpenAPI endpoint returned HTTP success." >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::Grader did not pass revision readiness + HTTPS OpenAPI probe"
+          exit 1
+
+      - name: Remove temporary checked out private sources
+        if: always()
+        run: rm -rf private-grader

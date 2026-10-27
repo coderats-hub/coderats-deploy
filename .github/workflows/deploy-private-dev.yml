@@ -38,19 +38,20 @@ permissions:
   id-token: write
 
 concurrency:
-  group: "coderats-central-dev-${{ github.event_name == 'push' && github.event.head_commit.message == 'ci(dev): publish beta4 api' && 'api' || (github.event_name == 'push' || github.event_name == 'schedule') && 'get-worker' || inputs.service }}"
+  group: "coderats-central-dev-${{ github.event_name == 'push' && github.event.head_commit.message == 'ci(dev): publish proficiency badges web' && 'web' || github.event_name == 'push' && github.event.head_commit.message == 'ci(dev): publish beta4 api' && 'api' || (github.event_name == 'push' || github.event_name == 'schedule') && 'get-worker' || inputs.service }}"
   cancel-in-progress: false
 
 jobs:
   deploy:
-    name: "Build and release ${{ github.event_name == 'push' && github.event.head_commit.message == 'ci(dev): publish beta4 api' && 'api' || (github.event_name == 'push' || github.event_name == 'schedule') && 'get-worker' || inputs.service }} (private source)"
+    name: "Build and release ${{ github.event_name == 'push' && github.event.head_commit.message == 'ci(dev): publish proficiency badges web' && 'web' || github.event_name == 'push' && github.event.head_commit.message == 'ci(dev): publish beta4 api' && 'api' || (github.event_name == 'push' || github.event_name == 'schedule') && 'get-worker' || inputs.service }} (private source)"
     if: >-
       github.repository == 'coderats-hub/coderats-deploy' &&
       github.ref == 'refs/heads/main' &&
       (github.event_name == 'workflow_dispatch' ||
        github.event_name == 'schedule' ||
        (github.event_name == 'push' &&
-        (github.event.head_commit.message == 'ci(dev): publish beta4 api' ||
+        (github.event.head_commit.message == 'ci(dev): publish proficiency badges web' ||
+         github.event.head_commit.message == 'ci(dev): publish beta4 api' ||
           github.event.head_commit.message == 'ci(dev): verify GET worker')))
     environment: dev
     # The CodeRats deployment tooling lives in this public repository.
@@ -60,7 +61,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 70
     env:
-      DEPLOY_SERVICE: "${{ github.event_name == 'push' && github.event.head_commit.message == 'ci(dev): publish beta4 api' && 'api' || (github.event_name == 'push' || github.event_name == 'schedule') && 'get-worker' || inputs.service }}"
+      DEPLOY_SERVICE: "${{ github.event_name == 'push' && github.event.head_commit.message == 'ci(dev): publish proficiency badges web' && 'web' || github.event_name == 'push' && github.event.head_commit.message == 'ci(dev): publish beta4 api' && 'api' || (github.event_name == 'push' || github.event_name == 'schedule') && 'get-worker' || inputs.service }}"
     defaults:
       run:
         shell: bash
@@ -145,8 +146,28 @@ jobs:
           set -euo pipefail
           [[ "$NEXT_PUBLIC_API_URL" == https://* ]] || { echo "::error::Missing valid DEV API origin"; exit 1; }
           runlog="${RUNNER_TEMP}/coderats-web-checks.log"
-          if ! (npm ci --no-audit --no-fund && npm test && npx tsc --noEmit && npm run build -- --webpack) >"$runlog" 2>&1; then
-            echo "::error::Private web validation failed. Review the local runner log, not the public Actions log."
+          # Do not reveal private test output in this public repository.
+          # Expose only which verification stage failed.
+          if ! npm ci --no-audit --no-fund >"$runlog" 2>&1; then
+            echo "::error::Private web validation failed: dependency installation."
+            exit 1
+          fi
+          if ! npm test >"$runlog" 2>&1; then
+            echo "::error::Private web validation failed: unit tests."
+            exit 1
+          fi
+          if ! npx tsc --noEmit >"$runlog" 2>&1; then
+            echo "::error::Private web validation failed: TypeScript."
+            python3 - "$runlog" <<'PY'
+          import pathlib, re, sys
+          content = pathlib.Path(sys.argv[1]).read_text(errors="replace")
+          codes = re.findall(r"error (TS[0-9]+)", content)
+          print("Sanitized TypeScript error counts:", {k: codes.count(k) for k in sorted(set(codes))})
+          PY
+            exit 1
+          fi
+          if ! npm run build -- --webpack >"$runlog" 2>&1; then
+            echo "::error::Private web validation failed: Next build."
             exit 1
           fi
           echo "Private frontend validation passed."

@@ -39,3 +39,7 @@ jobs:
           AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
           CODERATS_AZURE_RESOURCE_GROUP: rg-coderats-base-dev
         run: python3 scripts/publish_workbooks.py
+      - name: Diagnose DEV Log Analytics ingestion (aggregates only)
+        env:
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        run: python3 scripts/diagnose_telemetry_dev.py

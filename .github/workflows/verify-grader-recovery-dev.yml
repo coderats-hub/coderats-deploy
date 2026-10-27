@@ -1,0 +1,49 @@
+name: Verify restored CodeRats Grader DEV revision
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/verify-grader-recovery-dev.yml]
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  verify:
+    if: >-
+      github.repository == 'coderats-hub/coderats-deploy' &&
+      github.ref == 'refs/heads/main' &&
+      github.event.head_commit.message == 'ci(dev): verify restored Grader AI'
+    runs-on: ubuntu-latest
+    environment: dev
+    timeout-minutes: 15
+    steps:
+      - name: Login to DEV Azure
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Verify exact restored source and Azure Container App revision
+        env:
+          EXPECTED_SUBSCRIPTION: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          set -euo pipefail
+          app=ca-coderats-grader-dev
+          rg=rg-coderats-base-dev
+          test "$(az account show --query id -o tsv)" = "$EXPECTED_SUBSCRIPTION"
+          actual="$(az containerapp show -g "$rg" -n "$app" --query properties.template.containers[0].image -o tsv)"
+          latest="$(az containerapp show -g "$rg" -n "$app" --query properties.latestRevisionName -o tsv)"
+          ready="$(az containerapp show -g "$rg" -n "$app" --query properties.latestReadyRevisionName -o tsv)"
+          [[ "$actual" == *"api-grader-coderats:6b897bfa7add314ef5766518974cb71a7e077249-"* ]] || {
+            echo "::error::Grader is not yet running restored source SHA"; exit 1;
+          }
+          [[ -n "$latest" && "$latest" == "$ready" ]] || {
+            echo "::error::Restored grader revision has not reached Azure readiness"; exit 1;
+          }
+          echo "Azure DEV Grader verified with full-featured develop source 6b897bfa7add314ef5766518974cb71a7e077249." >> "$GITHUB_STEP_SUMMARY"
+          echo "Healthy revision: $ready." >> "$GITHUB_STEP_SUMMARY"
+          if az containerapp show -g "$rg" -n "$app" \
+            --query 'properties.template.containers[0].env[].name' -o tsv | grep -Fxq OPENAI_MODEL; then
+            echo "OpenAI model environment override exists." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "OpenAI model environment override absent; application will use source-code default." >> "$GITHUB_STEP_SUMMARY"
+          fi

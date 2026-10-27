@@ -1,0 +1,73 @@
+name: CodeRats DEV API baseline benchmark
+on:
+  workflow_dispatch:
+    inputs:
+      service:
+        description: Service to sample safely
+        required: true
+        type: choice
+        options: [web, api, grader]
+      confirmation:
+        description: Type BENCHMARK_DEV
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: coderats-dev-benchmark
+  cancel-in-progress: false
+jobs:
+  baseline:
+    if: github.repository == 'coderats-hub/coderats-deploy' && github.ref == 'refs/heads/main' && inputs.confirmation == 'BENCHMARK_DEV'
+    runs-on: ubuntu-latest
+    environment: dev
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Select verified DEV origin (not the public production domain)
+        env:
+          SERVICE: ${{ inputs.service }}
+          WEB_URL: ${{ vars.AZURE_DEV_WEB_URL }}
+          API_URL: ${{ vars.AZURE_DEV_API_URL }}
+          GRADER_URL: ${{ vars.AZURE_DEV_GRADER_URL }}
+        run: |
+          set -euo pipefail
+          case "$SERVICE" in
+            web) url="$WEB_URL";;
+            api) url="$API_URL";;
+            grader) url="$GRADER_URL";;
+            *) exit 1;;
+          esac
+          [[ -n "$url" ]] || { echo "::error::Set AZURE_DEV_${SERVICE^^}_URL in dev environment"; exit 1; }
+          echo "TARGET_URL=$url" >> "$GITHUB_ENV"
+      - name: Collect bounded, read-only latency baseline
+        env:
+          TARGET_URL: ${{ env.TARGET_URL }}
+          SERVICE: ${{ inputs.service }}
+        run: python3 scripts/benchmark_dev.py --service "$SERVICE" --base-url "$TARGET_URL" --requests 15 --output benchmark-results.json
+      - name: Record public, aggregated benchmark summary only
+        if: always()
+        run: |
+          if [[ -f benchmark-results.json ]]; then
+            python3 - <<'PY'
+          import json,os
+          d=json.load(open('benchmark-results.json'))
+          m=d['results']
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:
+              f.write(f"### {d['service']} DEV health benchmark\n\n")
+              f.write(f"Requests: {m['count']}; errors: {m['errors']}; p50: {m['p50_ms']} ms; p95: {m['p95_ms']} ms.\n")
+              f.write("\n**This is a low-volume health baseline, not an end-to-end/call-reduction benchmark.**\n")
+          PY
+          fi
+      - name: Upload aggregated read-only measurements
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coderats-dev-benchmark-${{ inputs.service }}
+          path: benchmark-results.json
+          retention-days: 14

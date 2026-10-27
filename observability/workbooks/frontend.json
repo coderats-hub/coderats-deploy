@@ -1,0 +1,71 @@
+{
+  "version": "Notebook/1.0",
+  "items": [
+    {
+      "type": 1,
+      "name": "Introdução",
+      "content": {
+        "json": "## Frontend · Requisições e latência\nEste painel apresenta as **requisições recebidas pelo servidor web quando instrumentado**. Chamadas iniciadas no navegador não aparecem automaticamente aqui. O workflow de benchmark Playwright mede quantidade de requests nas jornadas públicas sem coletar URLs privadas."
+      }
+    },
+    {
+      "type": 3,
+      "name": "Atividade por role",
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "AppRequests\n| where TimeGenerated > ago(24h)\n| summarize Requests=count(), Falhas=countif(Success == false), P95_ms=round(percentile(DurationMs,95),1) by AppRoleName\n| order by Requests desc",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "resourceIds": [
+          "__LOG_ANALYTICS_WORKSPACE_ID__"
+        ],
+        "visualization": "table",
+        "size": 0,
+        "timeContext": {
+          "durationMs": 86400000
+        }
+      }
+    },
+    {
+      "type": 3,
+      "name": "Duração por rota",
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "AppRequests\n| where TimeGenerated > ago(24h)\n| summarize Requests=count(), P95_ms=round(percentile(DurationMs,95),1) by AppRoleName, Name\n| top 30 by Requests desc",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "resourceIds": [
+          "__LOG_ANALYTICS_WORKSPACE_ID__"
+        ],
+        "visualization": "table",
+        "size": 0,
+        "timeContext": {
+          "durationMs": 86400000
+        }
+      }
+    },
+    {
+      "type": 3,
+      "name": "Variação da carga",
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "AppRequests\n| where TimeGenerated > ago(7d)\n| summarize Requests=count() by bin(TimeGenerated,1h), AppRoleName\n| order by TimeGenerated asc",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "resourceIds": [
+          "__LOG_ANALYTICS_WORKSPACE_ID__"
+        ],
+        "visualization": "timechart",
+        "size": 0,
+        "timeContext": {
+          "durationMs": 86400000
+        }
+      }
+    }
+  ],
+  "isLocked": false,
+  "fallbackResourceIds": [
+    "__LOG_ANALYTICS_WORKSPACE_ID__"
+  ],
+  "styleSettings": {}
+}

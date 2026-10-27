@@ -1,3 +1,4 @@
+# 2026-10-27: final colony lifecycle API with retained historical scores and live-member removal (831b1d237d073255d0cc32120d1a0153639c622f).
 # 2026-10-27: release colony seasonal leaderboard UI (tested develop 43601b8ef39b89b755b5836e60ca296699486640).
 # 2026-10-27: release colony season lifecycle API (tested develop 9ef1709978c2f4a8921f3d85d3577ec4bfeea382).
 # GET Node/Next evidence labels (web develop f23e623814239af7b5119c0d1e55eb389dbfad5b).

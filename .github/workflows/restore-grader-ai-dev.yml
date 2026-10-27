@@ -151,11 +151,16 @@ jobs:
             actual="$(az containerapp show -g "$rg" -n "$app" --query 'properties.template.containers[0].image' -o tsv)"
             latest="$(az containerapp show -g "$rg" -n "$app" --query properties.latestRevisionName -o tsv)"
             ready="$(az containerapp show -g "$rg" -n "$app" --query properties.latestReadyRevisionName -o tsv)"
-            if [[ "$actual" == "$image" && -n "$latest" && "$latest" == "$ready" ]] &&
-               curl --fail --silent --show-error --max-time 12 "https://$fqdn/openapi.json" >/dev/null 2>&1; then
-              echo "Grader restored to `develop` at `$SOURCE_SHA`." >> "$GITHUB_STEP_SUMMARY"
-              echo "Azure DEV Grader ready: `$latest`." >> "$GITHUB_STEP_SUMMARY"
-              echo "OpenAPI endpoint returned HTTP success." >> "$GITHUB_STEP_SUMMARY"
+            if [[ "$actual" == "$image" && -n "$latest" && "$latest" == "$ready" ]]; then
+              echo "Grader restored to source $SOURCE_SHA." >> "$GITHUB_STEP_SUMMARY"
+              echo "Azure DEV Grader revision ready: $latest." >> "$GITHUB_STEP_SUMMARY"
+              # Private Grader ingress may not accept HTTPS from the public GitHub runner.
+              # Azure readiness is authoritative; this HTTP probe is informative only.
+              if curl --fail --silent --show-error --max-time 8 "https://$fqdn/openapi.json" >/dev/null 2>&1; then
+                echo "External OpenAPI probe successful." >> "$GITHUB_STEP_SUMMARY"
+              else
+                echo "External OpenAPI probe unavailable; private ingress may be in use." >> "$GITHUB_STEP_SUMMARY"
+              fi
               exit 0
             fi
             sleep 10

@@ -1,0 +1,35 @@
+{
+  "version": "Notebook/1.0",
+  "items": [
+    {
+      "type": 1,
+      "name": "Introdução",
+      "content": "{\"json\":\"## CodeRats · Saúde e volume\\nDados reais de **AppRequests** no Log Analytics. A ausência de dados indica que a instrumentação precisa ser verificada; não equivale a zero chamadas. Filtre períodos no Azure Workbook e compare versões com janelas equivalentes.\"}"
+    },
+    {
+      "type": 3,
+      "name": "Resumo por serviço",
+      "content": "{\"version\":\"KqlItem/1.0\",\"query\":\"AppRequests\\n| where TimeGenerated > ago(24h)\\n| extend Servico = iff(isempty(AppRoleName), \\\"nao-instrumentado-com-service.name\\\", AppRoleName)\\n| summarize Chamadas=count(), Falhas=countif(Success == false), P95_ms=round(percentile(DurationMs, 95), 1) by Servico\\n| extend TaxaErro_pct=round(100.0*Falhas/Chamadas, 2)\\n| order by Chamadas desc\",\"queryType\":0,\"resourceType\":\"microsoft.operationalinsights/workspaces\",\"resourceIds\":[\"__LOG_ANALYTICS_WORKSPACE_ID__\"],\"visualization\":\"table\",\"size\":0,\"timeContext\":{\"durationMs\":86400000}}"
+    },
+    {
+      "type": 3,
+      "name": "Chamadas ao longo do tempo",
+      "content": "{\"version\":\"KqlItem/1.0\",\"query\":\"AppRequests\\n| where TimeGenerated > ago(24h)\\n| extend Servico = iff(isempty(AppRoleName), \\\"sem-role\\\", AppRoleName)\\n| summarize Chamadas=count() by bin(TimeGenerated, 15m), Servico\\n| order by TimeGenerated asc\",\"queryType\":0,\"resourceType\":\"microsoft.operationalinsights/workspaces\",\"resourceIds\":[\"__LOG_ANALYTICS_WORKSPACE_ID__\"],\"visualization\":\"timechart\",\"size\":0,\"timeContext\":{\"durationMs\":86400000}}"
+    },
+    {
+      "type": 3,
+      "name": "Endpoints mais chamados",
+      "content": "{\"version\":\"KqlItem/1.0\",\"query\":\"AppRequests\\n| where TimeGenerated > ago(24h)\\n| summarize Chamadas=count(), P95_ms=round(percentile(DurationMs,95),1), Falhas=countif(Success == false) by Endpoint=Name\\n| top 30 by Chamadas desc\",\"queryType\":0,\"resourceType\":\"microsoft.operationalinsights/workspaces\",\"resourceIds\":[\"__LOG_ANALYTICS_WORKSPACE_ID__\"],\"visualization\":\"table\",\"size\":0,\"timeContext\":{\"durationMs\":86400000}}"
+    },
+    {
+      "type": 3,
+      "name": "Erro por serviço",
+      "content": "{\"version\":\"KqlItem/1.0\",\"query\":\"AppRequests\\n| where TimeGenerated > ago(24h)\\n| summarize Total=count(), Erros=countif(Success == false) by AppRoleName, ResultCode\\n| order by Erros desc\",\"queryType\":0,\"resourceType\":\"microsoft.operationalinsights/workspaces\",\"resourceIds\":[\"__LOG_ANALYTICS_WORKSPACE_ID__\"],\"visualization\":\"table\",\"size\":0,\"timeContext\":{\"durationMs\":86400000}}"
+    }
+  ],
+  "isLocked": false,
+  "fallbackResourceIds": [
+    "__LOG_ANALYTICS_WORKSPACE_ID__"
+  ],
+  "styleSettings": {}
+}

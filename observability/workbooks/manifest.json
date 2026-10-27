@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "environment": "dev",
+  "workbooks": [
+    {
+      "file": "overview",
+      "displayName": "CodeRats | Saúde e volume",
+      "guid": "b5312d52-6241-490f-98c8-9153a1000001"
+    },
+    {
+      "file": "api-base",
+      "displayName": "CodeRats | API Base e dependências",
+      "guid": "b5312d52-6241-490f-98c8-9153a1000002"
+    },
+    {
+      "file": "frontend",
+      "displayName": "CodeRats | Frontend",
+      "guid": "b5312d52-6241-490f-98c8-9153a1000003"
+    },
+    {
+      "file": "grader",
+      "displayName": "CodeRats | Grader",
+      "guid": "b5312d52-6241-490f-98c8-9153a1000004"
+    }
+  ]
+}

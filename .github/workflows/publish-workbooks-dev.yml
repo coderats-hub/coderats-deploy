@@ -1,5 +1,10 @@
 name: Provision CodeRats DEV Azure Workbooks
 on:
+  push:
+    branches: [main]
+    paths:
+      - 'observability/workbooks/**'
+      - '.github/workflows/publish-workbooks-dev.yml'
   workflow_dispatch:
     inputs:
       confirmation:
@@ -11,7 +16,11 @@ permissions:
   id-token: write
 jobs:
   publish:
-    if: github.repository == 'coderats-hub/coderats-deploy' && github.ref == 'refs/heads/main' && inputs.confirmation == 'PUBLISH_WORKBOOKS_DEV'
+    if: >-
+      github.repository == 'coderats-hub/coderats-deploy' &&
+      github.ref == 'refs/heads/main' &&
+      ((github.event_name == 'workflow_dispatch' && inputs.confirmation == 'PUBLISH_WORKBOOKS_DEV') ||
+       (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'ci(dev): provision observability and benchmark')))
     environment: dev
     runs-on: ubuntu-latest
     timeout-minutes: 15

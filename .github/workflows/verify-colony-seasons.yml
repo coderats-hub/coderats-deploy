@@ -92,7 +92,10 @@ jobs:
                     line for line in lines if 'FAIL' in line or '❯' in line))))[:18])
           for keyword in ("AssertionError", "TestingLibraryElementError", "SyntaxError", "TypeError", "ReferenceError"):
               print("Failure kind", keyword, sum(keyword in line for line in lines))
-          print("Summary:", [line.strip()[-100:] for line in lines if 'Test Files' in line or 'Tests ' in line][-4:])
+          clean=re.sub(r'\\x1b\\[[0-9;]*m','', '\\n'.join(lines))
+          print("ReferenceError identifiers:",list(dict.fromkeys(re.findall(r'ReferenceError:\\s*([A-Za-z0-9_]+)',clean)))[:18])
+          print("Failure file names:",list(dict.fromkeys(re.findall(r'([A-Za-z0-9_.-]+\\.test\\.tsx?)',clean)))[:18])
+          print("Summary:", [line.strip()[-100:] for line in clean.splitlines() if 'Test Files' in line or 'Tests ' in line][-4:])
           PY
             echo "::error::Season frontend tests failed"; exit 1
           fi

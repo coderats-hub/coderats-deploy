@@ -1,5 +1,10 @@
 name: CodeRats DEV API baseline benchmark
 on:
+  push:
+    branches: [main]
+    paths:
+      - 'observability/workbooks/**'
+      - '.github/workflows/benchmark-dev.yml'
   workflow_dispatch:
     inputs:
       service:
@@ -13,45 +18,69 @@ on:
         type: string
 permissions:
   contents: read
+  id-token: write
 concurrency:
   group: coderats-dev-benchmark
   cancel-in-progress: false
 jobs:
   baseline:
-    if: github.repository == 'coderats-hub/coderats-deploy' && github.ref == 'refs/heads/main' && inputs.confirmation == 'BENCHMARK_DEV'
+    if: >-
+      github.repository == 'coderats-hub/coderats-deploy' &&
+      github.ref == 'refs/heads/main' &&
+      ((github.event_name == 'workflow_dispatch' && inputs.confirmation == 'BENCHMARK_DEV') ||
+       (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'ci(dev): provision observability and benchmark')))
     runs-on: ubuntu-latest
     environment: dev
-    timeout-minutes: 10
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [web, api, grader]
     steps:
       - uses: actions/checkout@v4
+        if: github.event_name == 'push' || matrix.service == inputs.service
         with:
           persist-credentials: false
       - uses: actions/setup-python@v5
+        if: github.event_name == 'push' || matrix.service == inputs.service
         with:
           python-version: '3.12'
-      - name: Select verified DEV origin (not the public production domain)
+      - name: Azure login read-only DEV FQDN discovery
+        if: github.event_name == 'push' || matrix.service == inputs.service
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Discover DEV service endpoint from deployed Container App
+        if: github.event_name == 'push' || matrix.service == inputs.service
         env:
-          SERVICE: ${{ inputs.service }}
-          WEB_URL: ${{ vars.AZURE_DEV_WEB_URL }}
-          API_URL: ${{ vars.AZURE_DEV_API_URL }}
-          GRADER_URL: ${{ vars.AZURE_DEV_GRADER_URL }}
+          SERVICE: ${{ matrix.service }}
+          WEB_APP: ${{ vars.AZURE_WEB_CONTAINER_APP }}
+          SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
         run: |
           set -euo pipefail
+          [[ "$(az account show --query id -o tsv)" == "$SUBSCRIPTION_ID" ]] || exit 1
           case "$SERVICE" in
-            web) url="$WEB_URL";;
-            api) url="$API_URL";;
-            grader) url="$GRADER_URL";;
+            web) app="$WEB_APP";;
+            api) app="ca-coderats-base-api-dev";;
+            grader) app="ca-coderats-grader-dev";;
             *) exit 1;;
           esac
-          [[ -n "$url" ]] || { echo "::error::Set AZURE_DEV_${SERVICE^^}_URL in dev environment"; exit 1; }
-          echo "TARGET_URL=$url" >> "$GITHUB_ENV"
+          [[ "$app" =~ ^[a-zA-Z0-9-]+$ ]] || { echo "::error::Invalid DEV app name"; exit 1; }
+          fqdn="$(az containerapp show -g rg-coderats-base-dev -n "$app" --query properties.configuration.ingress.fqdn -o tsv)"
+          [[ "$fqdn" =~ ^[a-zA-Z0-9.-]+[.]azurecontainerapps[.]io$ ]] || {
+            echo "::error::DEV service has no expected ingress domain"; exit 1;
+          }
+          echo "TARGET_URL=https://$fqdn" >> "$GITHUB_ENV"
       - name: Collect bounded, read-only latency baseline
+        if: github.event_name == 'push' || matrix.service == inputs.service
         env:
           TARGET_URL: ${{ env.TARGET_URL }}
-          SERVICE: ${{ inputs.service }}
+          SERVICE: ${{ matrix.service }}
         run: python3 scripts/benchmark_dev.py --service "$SERVICE" --base-url "$TARGET_URL" --requests 15 --output benchmark-results.json
       - name: Record public, aggregated benchmark summary only
-        if: always()
+        if: (github.event_name == 'push' || matrix.service == inputs.service) && always()
         run: |
           if [[ -f benchmark-results.json ]]; then
             python3 - <<'PY'
@@ -65,9 +94,9 @@ jobs:
           PY
           fi
       - name: Upload aggregated read-only measurements
-        if: success()
+        if: (github.event_name == 'push' || matrix.service == inputs.service) && success()
         uses: actions/upload-artifact@v4
         with:
-          name: coderats-dev-benchmark-${{ inputs.service }}
+          name: coderats-dev-benchmark-${{ matrix.service }}
           path: benchmark-results.json
           retention-days: 14

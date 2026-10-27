@@ -1,0 +1,100 @@
+name: Validate CodeRats colony seasons without deploying
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/verify-colony-seasons.yml]
+permissions:
+  contents: read
+concurrency:
+  group: coderats-colony-seasons-verify
+  cancel-in-progress: false
+jobs:
+  verify:
+    if: >-
+      github.repository == 'coderats-hub/coderats-deploy' &&
+      github.ref == 'refs/heads/main' &&
+      github.event.head_commit.message == 'ci: verify colony season lifecycle'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - repository: api-coderats-base
+            kind: api
+          - repository: web-coderats-base
+            kind: web
+    runs-on: ubuntu-latest
+    environment: dev
+    timeout-minutes: 50
+    steps:
+      - name: Read-only token to private code
+        uses: actions/create-github-app-token@v2
+        id: source-token
+        with:
+          app-id: ${{ vars.CODERATS_DEPLOY_APP_ID }}
+          private-key: ${{ secrets.CODERATS_DEPLOY_APP_PRIVATE_KEY }}
+          owner: coderats-hub
+          repositories: ${{ matrix.repository }}
+          permission-contents: read
+      - name: Check out private source to validate
+        uses: actions/checkout@v4
+        with:
+          repository: coderats-hub/${{ matrix.repository }}
+          ref: develop
+          token: ${{ steps.source-token.outputs.token }}
+          path: src
+          persist-credentials: false
+      - name: Prepare Java
+        if: matrix.kind == 'api'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Verify backend Java compilation, lifecycle tests, HTTP API contracts
+        if: matrix.kind == 'api'
+        working-directory: src
+        run: |
+          set -euo pipefail
+          log="$RUNNER_TEMP/private-api-season-tests.log"
+          if ! (chmod +x mvnw && ./mvnw --batch-mode -Dtest=ColonySeasonLifecycleTest,ColonyControllerApiTest test) >"$log" 2>&1; then
+            python3 - "$log" <<'PY'
+          import pathlib, re, sys
+          content=pathlib.Path(sys.argv[1]).read_text(errors="replace")
+          print("Sanitized API failures:")
+          print("  compiler locations:", re.findall(r'([A-Za-z0-9_]+\.java):\[(\d+),(\d+)\]',content)[:25])
+          print("  test failures:",len(re.findall(r'\bFailures: [1-9]',content)))
+          print("  test errors:",len(re.findall(r'\bErrors: [1-9]',content)))
+          print("  infra/docker unavailable:",'Could not find a valid Docker environment' in content)
+          PY
+            echo "::error::Season API validation failed. Private logs retained on ephemeral runner."
+            exit 1
+          fi
+          echo "Colony season backend tests passed."
+      - name: Prepare Node
+        if: matrix.kind == 'web'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Verify UI unit tests and TypeScript
+        if: matrix.kind == 'web'
+        working-directory: src
+        run: |
+          set -euo pipefail
+          log="$RUNNER_TEMP/private-web-season-tests.log"
+          if ! npm ci --no-audit --no-fund >"$log" 2>&1; then
+            echo "::error::Season frontend dependencies failed"; exit 1
+          fi
+          if ! npm test -- --run tests/colony-detail.test.tsx tests/colony-grader.test.tsx tests/colony-period.test.tsx >"$log" 2>&1; then
+            echo "::error::Season frontend tests failed"; exit 1
+          fi
+          if ! npx tsc --noEmit >"$log" 2>&1; then
+            python3 - "$log" <<'PY'
+          import pathlib,re,sys
+          lines=pathlib.Path(sys.argv[1]).read_text(errors="replace")
+          print("Sanitized TS diagnostics:",re.findall(r'([^ /]+\.tsx?):\((\d+),(\d+)\): error (TS\d+)',lines)[:25])
+          PY
+            echo "::error::Season TypeScript validation failed"; exit 1
+          fi
+          echo "Colony season frontend tests and TypeScript passed."
+      - name: Clean source
+        if: always()
+        run: rm -rf src

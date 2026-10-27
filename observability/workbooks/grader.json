@@ -7,6 +7,26 @@
       "content": "{\"json\":\"## Grader · Avaliações, integrações e erros\\nOs dados aparecem quando o serviço exporta **OpenTelemetry/Application Insights**. Avaliações e jobs devem receber métricas de negócio adicionais; o total de requests HTTP não equivale ao total de avaliações.\"}"
     },
     {
+      "type": 1,
+      "name": "Dados disponíveis do Grader",
+      "content": "{\"json\":\"### Grader · Atividade real do serviço privado\\nLogs estruturados do Grader aparecem no Log Analytics mesmo com ingress interno. A contagem de `http_request_completed` pode representar requisições quando o middleware emitir esses eventos. Eventos de console não devem ser tratados como avaliações concluídas.\"}"
+    },
+    {
+      "type": 3,
+      "name": "Grader logs e indicadores de erro",
+      "content": "{\"version\":\"KqlItem/1.0\",\"query\":\"ContainerAppConsoleLogs_CL\\n| where TimeGenerated > ago(24h)\\n| where tostring(column_ifexists(\\\"ContainerAppName_s\\\",\\\"\\\")) == \\\"ca-coderats-grader-dev\\\"\\n| summarize EntradasLog=count(), IndicadoresErro=countif(Log_s has_any (\\\"error\\\",\\\"exception\\\",\\\"failed\\\")) by bin(TimeGenerated,1h)\\n| order by TimeGenerated asc\",\"queryType\":0,\"resourceType\":\"microsoft.operationalinsights/workspaces\",\"resourceIds\":[\"__LOG_ANALYTICS_WORKSPACE_ID__\"],\"visualization\":\"timechart\",\"size\":0,\"timeContext\":{\"durationMs\":86400000}}"
+    },
+    {
+      "type": 3,
+      "name": "Grader requisições HTTP registradas nos logs",
+      "content": "{\"version\":\"KqlItem/1.0\",\"query\":\"ContainerAppConsoleLogs_CL\\n| where TimeGenerated > ago(24h)\\n| where tostring(column_ifexists(\\\"ContainerAppName_s\\\",\\\"\\\")) == \\\"ca-coderats-grader-dev\\\"\\n| where Log_s contains \\\"http_request_completed\\\"\\n| extend Dados=parse_json(Log_s)\\n| extend DuracaoMs=todouble(Dados.duration_ms), Codigo=toint(Dados.status)\\n| summarize EventosHTTP=count(), ComFalha=countif(Codigo >= 400), P95_ms=round(percentile(DuracaoMs,95),1) by bin(TimeGenerated,1h)\\n| order by TimeGenerated asc\",\"queryType\":0,\"resourceType\":\"microsoft.operationalinsights/workspaces\",\"resourceIds\":[\"__LOG_ANALYTICS_WORKSPACE_ID__\"],\"visualization\":\"timechart\",\"size\":0,\"timeContext\":{\"durationMs\":86400000}}"
+    },
+    {
+      "type": 3,
+      "name": "Grader eventos de sistema",
+      "content": "{\"version\":\"KqlItem/1.0\",\"query\":\"ContainerAppSystemLogs_CL\\n| where TimeGenerated > ago(7d)\\n| where tostring(column_ifexists(\\\"ContainerAppName_s\\\",\\\"\\\")) == \\\"ca-coderats-grader-dev\\\"\\n| summarize EventosSistema=count() by bin(TimeGenerated,1d)\\n| order by TimeGenerated asc\",\"queryType\":0,\"resourceType\":\"microsoft.operationalinsights/workspaces\",\"resourceIds\":[\"__LOG_ANALYTICS_WORKSPACE_ID__\"],\"visualization\":\"timechart\",\"size\":0,\"timeContext\":{\"durationMs\":86400000}}"
+    },
+    {
       "type": 3,
       "name": "Requisições por role",
       "content": "{\"version\":\"KqlItem/1.0\",\"query\":\"AppRequests\\n| where TimeGenerated > ago(24h)\\n| summarize Requests=count(), Falhas=countif(Success == false), P95_ms=round(percentile(DurationMs,95),1) by AppRoleName, Name\\n| top 40 by Requests desc\",\"queryType\":0,\"resourceType\":\"microsoft.operationalinsights/workspaces\",\"resourceIds\":[\"__LOG_ANALYTICS_WORKSPACE_ID__\"],\"visualization\":\"table\",\"size\":0,\"timeContext\":{\"durationMs\":86400000}}"

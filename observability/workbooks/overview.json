@@ -7,6 +7,26 @@
       "content": "{\"json\":\"## CodeRats · Saúde e volume\\nDados reais de **AppRequests** no Log Analytics. A ausência de dados indica que a instrumentação precisa ser verificada; não equivale a zero chamadas. Filtre períodos no Azure Workbook e compare versões com janelas equivalentes.\"}"
     },
     {
+      "type": 1,
+      "name": "Fonte de dados em produção",
+      "content": "{\"json\":\"### Registros reais do Azure Container Apps\\nOs próximos gráficos usam **ContainerAppConsoleLogs_CL** e **ContainerAppSystemLogs_CL**, que já recebem dados no ambiente DEV. **Entradas de log não são equivalentes a requisições HTTP.** Os gráficos `AppRequests` seguintes só serão preenchidos com instrumentação APM.\"}"
+    },
+    {
+      "type": 3,
+      "name": "Logs por Container App nas últimas 24 h",
+      "content": "{\"version\":\"KqlItem/1.0\",\"query\":\"ContainerAppConsoleLogs_CL\\n| where TimeGenerated > ago(24h)\\n| extend Servico = tostring(column_ifexists(\\\"ContainerAppName_s\\\",\\\"nao-identificado\\\"))\\n| summarize EntradasLog=count(), IndicadoresErro=countif(Log_s has_any (\\\"error\\\",\\\"exception\\\",\\\"failed\\\")) by Servico\\n| order by EntradasLog desc\",\"queryType\":0,\"resourceType\":\"microsoft.operationalinsights/workspaces\",\"resourceIds\":[\"__LOG_ANALYTICS_WORKSPACE_ID__\"],\"visualization\":\"table\",\"size\":0,\"timeContext\":{\"durationMs\":86400000}}"
+    },
+    {
+      "type": 3,
+      "name": "Volume de logs ao longo do dia",
+      "content": "{\"version\":\"KqlItem/1.0\",\"query\":\"ContainerAppConsoleLogs_CL\\n| where TimeGenerated > ago(24h)\\n| extend Servico=tostring(column_ifexists(\\\"ContainerAppName_s\\\",\\\"nao-identificado\\\"))\\n| summarize EntradasLog=count() by bin(TimeGenerated,15m), Servico\\n| order by TimeGenerated asc\",\"queryType\":0,\"resourceType\":\"microsoft.operationalinsights/workspaces\",\"resourceIds\":[\"__LOG_ANALYTICS_WORKSPACE_ID__\"],\"visualization\":\"timechart\",\"size\":0,\"timeContext\":{\"durationMs\":86400000}}"
+    },
+    {
+      "type": 3,
+      "name": "Eventos de sistema dos Container Apps",
+      "content": "{\"version\":\"KqlItem/1.0\",\"query\":\"ContainerAppSystemLogs_CL\\n| where TimeGenerated > ago(24h)\\n| extend Servico=tostring(column_ifexists(\\\"ContainerAppName_s\\\",\\\"nao-identificado\\\"))\\n| summarize EventosSistema=count() by Servico\\n| order by EventosSistema desc\",\"queryType\":0,\"resourceType\":\"microsoft.operationalinsights/workspaces\",\"resourceIds\":[\"__LOG_ANALYTICS_WORKSPACE_ID__\"],\"visualization\":\"table\",\"size\":0,\"timeContext\":{\"durationMs\":86400000}}"
+    },
+    {
       "type": 3,
       "name": "Resumo por serviço",
       "content": "{\"version\":\"KqlItem/1.0\",\"query\":\"AppRequests\\n| where TimeGenerated > ago(24h)\\n| extend Servico = iff(isempty(AppRoleName), \\\"nao-instrumentado-com-service.name\\\", AppRoleName)\\n| summarize Chamadas=count(), Falhas=countif(Success == false), P95_ms=round(percentile(DurationMs, 95), 1) by Servico\\n| extend TaxaErro_pct=round(100.0*Falhas/Chamadas, 2)\\n| order by Chamadas desc\",\"queryType\":0,\"resourceType\":\"microsoft.operationalinsights/workspaces\",\"resourceIds\":[\"__LOG_ANALYTICS_WORKSPACE_ID__\"],\"visualization\":\"table\",\"size\":0,\"timeContext\":{\"durationMs\":86400000}}"

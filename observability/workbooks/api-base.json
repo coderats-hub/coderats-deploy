@@ -7,6 +7,21 @@
       "content": "{\"json\":\"## API Base · Requisições e dependências\\nO isolamento por serviço depende de **service.name / AppRoleName** na telemetria. O painel lista funções reais por role sem assumir nomes não verificados. Para medir cache hit rate, é necessário emitir `AppMetrics` com contador dedicado.\"}"
     },
     {
+      "type": 1,
+      "name": "Dados disponíveis da API Base",
+      "content": "{\"json\":\"### API Base · Atividade observada\\nOs gráficos abaixo refletem **eventos de console** efetivamente ingeridos na Azure, e não contagem de chamadas HTTP. O painel de APM mais abaixo dependerá da exportação de `AppRequests`/`AppDependencies`.\"}"
+    },
+    {
+      "type": 3,
+      "name": "API Base logs e indícios de erro",
+      "content": "{\"version\":\"KqlItem/1.0\",\"query\":\"ContainerAppConsoleLogs_CL\\n| where TimeGenerated > ago(24h)\\n| where tostring(column_ifexists(\\\"ContainerAppName_s\\\",\\\"\\\")) == \\\"ca-coderats-base-api-dev\\\"\\n| summarize EntradasLog=count(), IndicadoresErro=countif(Log_s has_any (\\\"error\\\",\\\"exception\\\",\\\"failed\\\")), IndicadoresWarning=countif(Log_s has \\\"warn\\\") by bin(TimeGenerated,1h)\\n| order by TimeGenerated asc\",\"queryType\":0,\"resourceType\":\"microsoft.operationalinsights/workspaces\",\"resourceIds\":[\"__LOG_ANALYTICS_WORKSPACE_ID__\"],\"visualization\":\"timechart\",\"size\":0,\"timeContext\":{\"durationMs\":86400000}}"
+    },
+    {
+      "type": 3,
+      "name": "API Base volume de logs",
+      "content": "{\"version\":\"KqlItem/1.0\",\"query\":\"ContainerAppConsoleLogs_CL\\n| where TimeGenerated > ago(24h)\\n| where tostring(column_ifexists(\\\"ContainerAppName_s\\\",\\\"\\\")) == \\\"ca-coderats-base-api-dev\\\"\\n| summarize EntradasLog=count() by bin(TimeGenerated,15m)\\n| order by TimeGenerated asc\",\"queryType\":0,\"resourceType\":\"microsoft.operationalinsights/workspaces\",\"resourceIds\":[\"__LOG_ANALYTICS_WORKSPACE_ID__\"],\"visualization\":\"timechart\",\"size\":0,\"timeContext\":{\"durationMs\":86400000}}"
+    },
+    {
       "type": 3,
       "name": "Chamadas por role e operação",
       "content": "{\"version\":\"KqlItem/1.0\",\"query\":\"AppRequests\\n| where TimeGenerated > ago(24h)\\n| summarize Chamadas=count(), P50_ms=round(percentile(DurationMs,50),1), P95_ms=round(percentile(DurationMs,95),1) by AppRoleName, Name\\n| top 40 by Chamadas desc\",\"queryType\":0,\"resourceType\":\"microsoft.operationalinsights/workspaces\",\"resourceIds\":[\"__LOG_ANALYTICS_WORKSPACE_ID__\"],\"visualization\":\"table\",\"size\":0,\"timeContext\":{\"durationMs\":86400000}}"

@@ -72,13 +72,35 @@ jobs:
           [[ "$fqdn" =~ ^[a-zA-Z0-9.-]+[.]azurecontainerapps[.]io$ ]] || {
             echo "::error::DEV service has no expected ingress domain"; exit 1;
           }
-          echo "TARGET_URL=https://$fqdn" >> "$GITHUB_ENV"
+          if [[ "$fqdn" == *".internal."* ]]; then
+            [[ "$SERVICE" == "grader" ]] || { echo "::error::Unexpected internal ingress"; exit 1; }
+            echo "SERVICE_INTERNAL=true" >> "$GITHUB_ENV"
+            echo "GRADER_APP=$app" >> "$GITHUB_ENV"
+            echo "::notice::Grader has private ingress; public HTTP probing intentionally disabled."
+          else
+            echo "SERVICE_INTERNAL=false" >> "$GITHUB_ENV"
+            echo "TARGET_URL=https://$fqdn" >> "$GITHUB_ENV"
+          fi
       - name: Collect bounded, read-only latency baseline
-        if: github.event_name == 'push' || matrix.service == inputs.service
+        if: (github.event_name == 'push' || matrix.service == inputs.service) && env.SERVICE_INTERNAL != 'true'
         env:
           TARGET_URL: ${{ env.TARGET_URL }}
           SERVICE: ${{ matrix.service }}
         run: python3 scripts/benchmark_dev.py --service "$SERVICE" --base-url "$TARGET_URL" --requests 15 --output benchmark-results.json
+      - name: Verify private Grader's Azure revision readiness
+        if: (github.event_name == 'push' || matrix.service == inputs.service) && env.SERVICE_INTERNAL == 'true'
+        env:
+          GRADER_APP: ${{ env.GRADER_APP }}
+        run: |
+          set -euo pipefail
+          latest="$(az containerapp show -g rg-coderats-base-dev -n "$GRADER_APP" --query properties.latestRevisionName -o tsv)"
+          ready="$(az containerapp show -g rg-coderats-base-dev -n "$GRADER_APP" --query properties.latestReadyRevisionName -o tsv)"
+          if [[ -z "$latest" || "$latest" != "$ready" ]]; then
+            echo "::error::Private Grader DEV revision is not ready"; exit 1
+          fi
+          echo "### Grader DEV internal readiness" >> "$GITHUB_STEP_SUMMARY"
+          echo "Latest revision is ready. The Grader has private ingress, so HTTP latency cannot be measured from a public runner." >> "$GITHUB_STEP_SUMMARY"
+          echo "::notice::Private Grader Azure revision is ready. No HTTP requests were sent."
       - name: Record public, aggregated benchmark summary only
         if: (github.event_name == 'push' || matrix.service == inputs.service) && always()
         run: |
@@ -94,7 +116,7 @@ jobs:
           PY
           fi
       - name: Upload aggregated read-only measurements
-        if: (github.event_name == 'push' || matrix.service == inputs.service) && success()
+        if: (github.event_name == 'push' || matrix.service == inputs.service) && env.SERVICE_INTERNAL != 'true' && success()
         uses: actions/upload-artifact@v4
         with:
           name: coderats-dev-benchmark-${{ matrix.service }}

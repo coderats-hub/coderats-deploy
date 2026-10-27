@@ -1,0 +1,89 @@
+{
+  "version": "Notebook/1.0",
+  "items": [
+    {
+      "type": 1,
+      "name": "Introdução",
+      "content": {
+        "json": "## API Base · Requisições e dependências\nO isolamento por serviço depende de **service.name / AppRoleName** na telemetria. O painel lista funções reais por role sem assumir nomes não verificados. Para medir cache hit rate, é necessário emitir `AppMetrics` com contador dedicado."
+      }
+    },
+    {
+      "type": 3,
+      "name": "Chamadas por role e operação",
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "AppRequests\n| where TimeGenerated > ago(24h)\n| summarize Chamadas=count(), P50_ms=round(percentile(DurationMs,50),1), P95_ms=round(percentile(DurationMs,95),1) by AppRoleName, Name\n| top 40 by Chamadas desc",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "resourceIds": [
+          "__LOG_ANALYTICS_WORKSPACE_ID__"
+        ],
+        "visualization": "table",
+        "size": 0,
+        "timeContext": {
+          "durationMs": 86400000
+        }
+      }
+    },
+    {
+      "type": 3,
+      "name": "Saídas e integrações",
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "AppDependencies\n| where TimeGenerated > ago(24h)\n| summarize Chamadas=count(), Falhas=countif(Success == false), P95_ms=round(percentile(DurationMs,95),1) by AppRoleName, Target, Type\n| top 40 by Chamadas desc",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "resourceIds": [
+          "__LOG_ANALYTICS_WORKSPACE_ID__"
+        ],
+        "visualization": "table",
+        "size": 0,
+        "timeContext": {
+          "durationMs": 86400000
+        }
+      }
+    },
+    {
+      "type": 3,
+      "name": "Falhas e códigos HTTP",
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "AppRequests\n| where TimeGenerated > ago(7d)\n| summarize Chamadas=count() by bin(TimeGenerated,1h), ResultCode\n| order by TimeGenerated asc",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "resourceIds": [
+          "__LOG_ANALYTICS_WORKSPACE_ID__"
+        ],
+        "visualization": "timechart",
+        "size": 0,
+        "timeContext": {
+          "durationMs": 86400000
+        }
+      }
+    },
+    {
+      "type": 3,
+      "name": "Dependências mais lentas",
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "AppDependencies\n| where TimeGenerated > ago(24h)\n| summarize Chamadas=count(), P95_ms=round(percentile(DurationMs,95),1) by Target, Name\n| where Chamadas >= 2\n| top 20 by P95_ms desc",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "resourceIds": [
+          "__LOG_ANALYTICS_WORKSPACE_ID__"
+        ],
+        "visualization": "table",
+        "size": 0,
+        "timeContext": {
+          "durationMs": 86400000
+        }
+      }
+    }
+  ],
+  "isLocked": false,
+  "fallbackResourceIds": [
+    "__LOG_ANALYTICS_WORKSPACE_ID__"
+  ],
+  "styleSettings": {}
+}

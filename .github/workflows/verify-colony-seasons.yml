@@ -84,6 +84,16 @@ jobs:
             echo "::error::Season frontend dependencies failed"; exit 1
           fi
           if ! npm test -- --run tests/colony-detail.test.tsx tests/colony-grader.test.tsx tests/colony-period.test.tsx >"$log" 2>&1; then
+            python3 - "$log" <<'PY'
+          import pathlib, re, sys
+          lines = pathlib.Path(sys.argv[1]).read_text(errors="replace").splitlines()
+          print("Sanitized failing test file basenames:",
+                list(dict.fromkeys(re.findall(r'([A-Za-z0-9-]+\\.test\\.tsx?)', '\\n'.join(
+                    line for line in lines if 'FAIL' in line or '❯' in line))))[:18])
+          for keyword in ("AssertionError", "TestingLibraryElementError", "SyntaxError", "TypeError", "ReferenceError"):
+              print("Failure kind", keyword, sum(keyword in line for line in lines))
+          print("Summary:", [line.strip()[-100:] for line in lines if 'Test Files' in line or 'Tests ' in line][-4:])
+          PY
             echo "::error::Season frontend tests failed"; exit 1
           fi
           if ! npx tsc --noEmit >"$log" 2>&1; then

@@ -1,0 +1,89 @@
+{
+  "version": "Notebook/1.0",
+  "items": [
+    {
+      "type": 1,
+      "name": "Introdução",
+      "content": {
+        "json": "## Grader · Avaliações, integrações e erros\nOs dados aparecem quando o serviço exporta **OpenTelemetry/Application Insights**. Avaliações e jobs devem receber métricas de negócio adicionais; o total de requests HTTP não equivale ao total de avaliações."
+      }
+    },
+    {
+      "type": 3,
+      "name": "Requisições por role",
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "AppRequests\n| where TimeGenerated > ago(24h)\n| summarize Requests=count(), Falhas=countif(Success == false), P95_ms=round(percentile(DurationMs,95),1) by AppRoleName, Name\n| top 40 by Requests desc",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "resourceIds": [
+          "__LOG_ANALYTICS_WORKSPACE_ID__"
+        ],
+        "visualization": "table",
+        "size": 0,
+        "timeContext": {
+          "durationMs": 86400000
+        }
+      }
+    },
+    {
+      "type": 3,
+      "name": "Dependências externas",
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "AppDependencies\n| where TimeGenerated > ago(24h)\n| summarize Chamadas=count(), Falhas=countif(Success == false), P95_ms=round(percentile(DurationMs,95),1) by AppRoleName, Target, Type\n| top 30 by Chamadas desc",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "resourceIds": [
+          "__LOG_ANALYTICS_WORKSPACE_ID__"
+        ],
+        "visualization": "table",
+        "size": 0,
+        "timeContext": {
+          "durationMs": 86400000
+        }
+      }
+    },
+    {
+      "type": 3,
+      "name": "Exceções",
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "AppExceptions\n| where TimeGenerated > ago(7d)\n| summarize Ocorrencias=count() by AppRoleName, ExceptionType, bin(TimeGenerated,1d)\n| order by TimeGenerated desc",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "resourceIds": [
+          "__LOG_ANALYTICS_WORKSPACE_ID__"
+        ],
+        "visualization": "table",
+        "size": 0,
+        "timeContext": {
+          "durationMs": 86400000
+        }
+      }
+    },
+    {
+      "type": 3,
+      "name": "Métricas customizadas disponíveis",
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "AppMetrics\n| where TimeGenerated > ago(24h)\n| summarize Registros=count(), Total=sum(Sum) by AppRoleName, Name\n| top 30 by Registros desc",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "resourceIds": [
+          "__LOG_ANALYTICS_WORKSPACE_ID__"
+        ],
+        "visualization": "table",
+        "size": 0,
+        "timeContext": {
+          "durationMs": 86400000
+        }
+      }
+    }
+  ],
+  "isLocked": false,
+  "fallbackResourceIds": [
+    "__LOG_ANALYTICS_WORKSPACE_ID__"
+  ],
+  "styleSettings": {}
+}

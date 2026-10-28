@@ -1,3 +1,4 @@
+# DEV API Organizations V1: fair organization/colony rankings and V49 migration. api-coderats-base@develop 3c464165d1cc2f3c7e2c31af9236f5f0b1828605, validated central run 40786894290.
 # DEV frontend: beta media canvas now matches AI/ratings widths, with viewport-limited height. Source web-coderats-base@develop 47699a5fa4969cc92840c3ab58ba3c2aea7d751a; validated run 40772906558.
 # DEV web release — centered beta description, R.A.T.I.N.G.S. and narrower AI summary. Validated d77feda83ce7c4041a431c34077db824bab72fcd (CI 40771414026).
 # DEV web release — viewport-height capped check-in image; validated web develop cbfeab279b7d0214188af36593f9562f12a6eaf2 (CI run 40766909111).

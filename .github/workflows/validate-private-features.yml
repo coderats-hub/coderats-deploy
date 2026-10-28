@@ -12,7 +12,7 @@ permissions:
 jobs:
   validate:
     name: Validate ${{ matrix.service }} develop
-    # This workflow checks only; it NEVER publishes an image or updates Azure.
+    # This workflow checks only; it NEVER publishes an image or updates Azure. Round 2: roles, feed and private commit policy.
     environment: dev
     runs-on: ubuntu-latest
     timeout-minutes: 45

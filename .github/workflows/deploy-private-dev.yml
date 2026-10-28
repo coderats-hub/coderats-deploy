@@ -1,3 +1,4 @@
+# 2026-10-28: rerun DEV web release after Portuguese profile copy and share control accessibility fix (develop 8b95fb9cae87f1c6907b6dbf2ab82d1068674e3f).
 # 2026-10-28: DEV release of CodeRats profile sharing and dynamic social preview cards (web develop a6cfc9bdca5069e9a0b073d1600fd3d14322929f).
 # 2026-10-28: DEV release of privacy-safe public member profile endpoint for share previews (api develop c8ffcceb4ff55b0b6838e43fb72456c869f97443).
 # 2026-10-28: standardize colony list cards and compact repository bullet previews (web develop db1393e1b0eab70321e1885dd2bb940bd3eaa36e).

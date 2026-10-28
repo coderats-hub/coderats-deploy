@@ -1,3 +1,4 @@
+# 2026-10-28: standardize colony list cards and compact repository bullet previews (web develop db1393e1b0eab70321e1885dd2bb940bd3eaa36e).
 # 2026-10-28: release searchable repository multi-select in colony editor (web develop f8d0d16602927421fd8cc55737f59cbba4cb53d7).
 # 2026-10-28: web develop 2183e9489084e930fc12163d6e96d826cd94ff32 — render invitation GitHub repositories as a bulleted list.
 # DEV web badge release request: source web-coderats-base@develop 65c6e761ef687d783ea9f68d9f2787db156d0faa (earned-stack badge corrections and seven WebPs).

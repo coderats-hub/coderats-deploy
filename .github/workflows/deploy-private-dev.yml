@@ -1,3 +1,4 @@
+# CodeRats DEV release WEB: group chat management, proficiency badges, check-in visualization beta. Source web-coderats-base@develop c09feb307f0b8af45a3747018c2e25a48dab64ce.
 # CodeRats DEV release API: group administration, media gallery and private-commit visibility. Source api-coderats-base@develop 2708f62677d868836c5308c00926dddd65451072.
 # 2026-10-28: rerun DEV web release after Portuguese profile copy and share control accessibility fix (develop 8b95fb9cae87f1c6907b6dbf2ab82d1068674e3f).
 # 2026-10-28: DEV release of CodeRats profile sharing and dynamic social preview cards (web develop a6cfc9bdca5069e9a0b073d1600fd3d14322929f).

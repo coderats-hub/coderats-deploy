@@ -12,7 +12,7 @@ permissions:
 jobs:
   validate:
     name: Validate ${{ matrix.service }} develop
-    # This workflow checks only; it NEVER deploys. Regression: aligned check-in media/AI/description widths (web develop 47699a5).
+    # This workflow checks only; it NEVER deploys. Organizations: two rankings, colony linking, and default-enabled check-in beta (2026-10-28).
     environment: dev
     runs-on: ubuntu-latest
     timeout-minutes: 45

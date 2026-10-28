@@ -1,3 +1,4 @@
+# DEV frontend: beta media canvas now matches AI/ratings widths, with viewport-limited height. Source web-coderats-base@develop 47699a5fa4969cc92840c3ab58ba3c2aea7d751a; validated run 40772906558.
 # DEV web release — centered beta description, R.A.T.I.N.G.S. and narrower AI summary. Validated d77feda83ce7c4041a431c34077db824bab72fcd (CI 40771414026).
 # DEV web release — viewport-height capped check-in image; validated web develop cbfeab279b7d0214188af36593f9562f12a6eaf2 (CI run 40766909111).
 # DEV frontend layout fixes: web-coderats-base develop e8f56753b3d003c4212e71968d5853a8e927eeeb — responsive check-ins, direct Grader tests, group member list, achievement history.

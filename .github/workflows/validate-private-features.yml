@@ -101,7 +101,13 @@ jobs:
               if '[ERROR]' not in line: continue
               m = re.search(r'([\w]+\.java):\[(\d+),(\d+)\]', line)
               if m: print('compiler-location:', m.group(1),m.group(2),m.group(3))
-              if 'Tests run:' in line: print('test-summary:',re.sub(r'[^0-9, :=]', '',line)[:100])
+              if 'Tests run:' in line:
+                  print('test-summary:',re.sub(r'[^0-9, :=]', '',line)[:100])
+                  m = re.search(r'Tests run: ([0-9]+), Failures: ([0-9]+), Errors: ([0-9]+).*?-- in ([a-zA-Z0-9_.$]+)', line)
+                  if m and (int(m.group(2)) or int(m.group(3))):
+                      print('failed-test-class:',m.group(4).split('.')[-1])
+              if 'Failures:' in line and 'Tests run:' not in line:
+                  print('failure-section-present')
               if 'Failed to execute goal' in line: print('maven-goal-failed')
           PY
             exit 1

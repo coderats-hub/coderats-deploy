@@ -12,7 +12,7 @@ permissions:
 jobs:
   validate:
     name: Validate ${{ matrix.service }} develop
-    # This workflow checks only; it NEVER deploys. Organizations: two rankings, colony linking, and default-enabled check-in beta (2026-10-28).
+    # This workflow checks only; it NEVER deploys. Validate organizations and keep legacy feed tests opted out of new default beta.
     environment: dev
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -75,12 +75,18 @@ jobs:
               python3 - "$logfile" <<'PY'
           import pathlib, re, sys
           data = pathlib.Path(sys.argv[1]).read_text(errors='replace')
+          data = re.sub(r'\\x1b\\[[0-9;]*m', '', data)
           print("TS errors:", dict((x, len(re.findall(x, data))) for x in sorted(set(re.findall(r'TS[0-9]+', data)))))
           # Only show basename of test files, never assertion values or secrets.
           failing = set()
           for match in re.findall(r'(?:FAIL|❯|×|✗)\\s+(?:[^\\s]*?/)?([\\w.-]+\\.test\\.tsx?)', data):
               if re.fullmatch(r'[A-Za-z0-9_.-]+', match):
                   failing.add(match)
+          # Vitest groups failed files as tests/file.test.tsx (N tests | M failed).
+          for line in data.splitlines():
+              if '.test.ts' not in line or ('failed' not in line.lower() and 'FAIL' not in line):
+                  continue
+              failing.update(re.findall(r'([A-Za-z0-9_.-]+\\.test\\.tsx?)', line))
           print("Failing test files:", ", ".join(sorted(failing)) or "(not identified)")
           for line in data.splitlines():
               if re.search(r'\bFAIL\b|Test Files|Tests  |error TS', line):

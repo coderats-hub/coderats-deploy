@@ -173,6 +173,11 @@ jobs:
           content = pathlib.Path(sys.argv[1]).read_text(errors="replace")
           codes = re.findall(r"error (TS[0-9]+)", content)
           print("Sanitized TypeScript error counts:", {k: codes.count(k) for k in sorted(set(codes))})
+          # Diagnostic fingerprint: no private path, source text or error message is emitted.
+          # Match a path hash against a private checkout separately to locate type errors.
+          import hashlib
+          for filename, line, column, code in re.findall(r"(?m)^(.+?)\\((\\d+),(\\d+)\\): error (TS\\d+)", content):
+              print("Private TypeScript diagnostic:", hashlib.sha256(filename.encode()).hexdigest()[:16], line, column, code)
           PY
             exit 1
           fi

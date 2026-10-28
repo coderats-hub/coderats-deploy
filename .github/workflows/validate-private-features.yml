@@ -76,6 +76,12 @@ jobs:
           import pathlib, re, sys
           data = pathlib.Path(sys.argv[1]).read_text(errors='replace')
           print("TS errors:", dict((x, len(re.findall(x, data))) for x in sorted(set(re.findall(r'TS[0-9]+', data)))))
+          # Only show basename of test files, never assertion values or secrets.
+          failing = set()
+          for match in re.findall(r'(?:FAIL|❯|×|✗)\\s+(?:[^\\s]*?/)?([\\w.-]+\\.test\\.tsx?)', data):
+              if re.fullmatch(r'[A-Za-z0-9_.-]+', match):
+                  failing.add(match)
+          print("Failing test files:", ", ".join(sorted(failing)) or "(not identified)")
           for line in data.splitlines():
               if re.search(r'\bFAIL\b|Test Files|Tests  |error TS', line):
                   print("sanitized failure type:", 'tests' if 'FAIL' in line or 'Test' in line else 'ts')

@@ -12,7 +12,7 @@ permissions:
 jobs:
   validate:
     name: Validate ${{ matrix.service }} develop
-    # This workflow checks only; it NEVER publishes an image or updates Azure. Regression: viewport-height-capped check-in media (web develop 112f1143).
+    # This workflow checks only; it NEVER publishes an image or updates Azure. Regression: viewport-height-capped check-in media and TypeScript-compatible test (web develop cbfeab2).
     environment: dev
     runs-on: ubuntu-latest
     timeout-minutes: 45

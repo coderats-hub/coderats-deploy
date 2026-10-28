@@ -68,10 +68,23 @@ jobs:
         run: |
           set -euo pipefail
           logfile="${RUNNER_TEMP}/checkins-web-validation.log"
-          for command in "npm ci --no-audit --no-fund" "npm test" "npx tsc --noEmit" "npm run build -- --webpack"; do
+          for command in "npm ci --no-audit --no-fund" "npm test -- --reporter=json --outputFile=${RUNNER_TEMP}/coderats-web-test-report.json" "npx tsc --noEmit" "npm run build -- --webpack"; do
             echo "Running ${command%% *} web validation"
             if ! bash -c "$command" >"$logfile" 2>&1; then
               echo "::error::Web validation failed: ${command%% *}"
+              if test -f "${RUNNER_TEMP}/coderats-web-test-report.json"; then
+                python3 - "${RUNNER_TEMP}/coderats-web-test-report.json" <<'PY'
+          import json, pathlib, re, sys
+          data = json.loads(pathlib.Path(sys.argv[1]).read_text(errors='replace'))
+          failures = []
+          for suite in data.get("testResults", []):
+              if suite.get("status") != "failed": continue
+              name = pathlib.PurePath(suite.get("name", "")).name
+              if re.fullmatch(r"[A-Za-z0-9_.-]+", name): failures.append(name)
+          print("FAILED_TEST_SUITES:", ", ".join(sorted(set(failures))) or "none")
+          print("FAILED_TEST_COUNT:", data.get("numFailedTests", "?"))
+          PY
+              fi
               python3 - "$logfile" <<'PY'
           import pathlib, re, sys
           data = pathlib.Path(sys.argv[1]).read_text(errors='replace')

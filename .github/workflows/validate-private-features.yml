@@ -1,0 +1,112 @@
+name: Validate CodeRats private feature branches
+
+on:
+  push:
+    branches: [main]
+    paths: [".github/workflows/validate-private-features.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate ${{ matrix.service }} develop
+    # This workflow checks only; it NEVER publishes an image or updates Azure.
+    environment: dev
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - service: web
+            repository: web-coderats-base
+          - service: api
+            repository: api-coderats-base
+    steps:
+      - name: Check short-lived checkout credentials
+        env:
+          APP_ID: ${{ vars.CODERATS_DEPLOY_APP_ID }}
+          APP_KEY: ${{ secrets.CODERATS_DEPLOY_APP_PRIVATE_KEY }}
+        run: |
+          test -n "$APP_ID"
+          test -n "$APP_KEY"
+      - name: Obtain read-only GitHub App token
+        id: token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.CODERATS_DEPLOY_APP_ID }}
+          private-key: ${{ secrets.CODERATS_DEPLOY_APP_PRIVATE_KEY }}
+          owner: coderats-hub
+          repositories: ${{ matrix.repository }}
+          permission-contents: read
+      - name: Checkout tested source
+        uses: actions/checkout@v4
+        with:
+          repository: coderats-hub/${{ matrix.repository }}
+          ref: develop
+          token: ${{ steps.token.outputs.token }}
+          persist-credentials: false
+          path: app-src
+      - name: Node 24
+        if: matrix.service == 'web'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Java 21
+        if: matrix.service == 'api'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Web tests and build (private output)
+        if: matrix.service == 'web'
+        working-directory: app-src
+        env:
+          NEXT_PUBLIC_API_URL: https://coderats.club
+        run: |
+          set -euo pipefail
+          logfile="${RUNNER_TEMP}/checkins-web-validation.log"
+          for command in "npm ci --no-audit --no-fund" "npm test" "npx tsc --noEmit" "npm run build -- --webpack"; do
+            echo "Running ${command%% *} web validation"
+            if ! bash -c "$command" >"$logfile" 2>&1; then
+              echo "::error::Web validation failed: ${command%% *}"
+              python3 - "$logfile" <<'PY'
+          import pathlib, re, sys
+          data = pathlib.Path(sys.argv[1]).read_text(errors='replace')
+          print("TS errors:", dict((x, len(re.findall(x, data))) for x in sorted(set(re.findall(r'TS[0-9]+', data)))))
+          for line in data.splitlines():
+              if re.search(r'\bFAIL\b|Test Files|Tests  |error TS', line):
+                  print("sanitized failure type:", 'tests' if 'FAIL' in line or 'Test' in line else 'ts')
+          PY
+              exit 1
+            fi
+          done
+          echo "Web tests, typecheck and build passed"
+      - name: Java verification (private output)
+        if: matrix.service == 'api'
+        working-directory: app-src
+        run: |
+          set -euo pipefail
+          chmod +x mvnw
+          logfile="${RUNNER_TEMP}/checkins-api-validation.log"
+          if ! ./mvnw --batch-mode verify >"$logfile" 2>&1; then
+            echo "::error::API Maven verify failed; sanitized diagnostics below"
+            python3 - "$logfile" <<'PY'
+          import pathlib, re, sys
+          lines = pathlib.Path(sys.argv[1]).read_text(errors='replace').splitlines()
+          print('java compilation errors:',sum('COMPILATION ERROR' in x for x in lines))
+          for line in lines:
+              if '[ERROR]' not in line: continue
+              m = re.search(r'([\w]+\.java):\[(\d+),(\d+)\]', line)
+              if m: print('compiler-location:', m.group(1),m.group(2),m.group(3))
+              if 'Tests run:' in line: print('test-summary:',re.sub(r'[^0-9, :=]', '',line)[:100])
+              if 'Failed to execute goal' in line: print('maven-goal-failed')
+          PY
+            exit 1
+          fi
+          echo "API Maven verify passed"
+      - name: Remove private sources
+        if: always()
+        run: rm -rf app-src

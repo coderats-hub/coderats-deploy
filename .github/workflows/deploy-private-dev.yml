@@ -1,3 +1,4 @@
+# DEV web release — viewport-height capped check-in image; validated web develop cbfeab279b7d0214188af36593f9562f12a6eaf2 (CI run 40766909111).
 # DEV frontend layout fixes: web-coderats-base develop e8f56753b3d003c4212e71968d5853a8e927eeeb — responsive check-ins, direct Grader tests, group member list, achievement history.
 # CodeRats DEV release WEB: group chat management, proficiency badges, check-in visualization beta. Source web-coderats-base@develop c09feb307f0b8af45a3747018c2e25a48dab64ce.
 # CodeRats DEV release API: group administration, media gallery and private-commit visibility. Source api-coderats-base@develop 2708f62677d868836c5308c00926dddd65451072.

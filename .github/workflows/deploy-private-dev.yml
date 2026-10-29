@@ -1,3 +1,4 @@
+# Admin directory and daily date picker DEV web release: web develop fc2157997e52403a2ba297fd29c489096ec576da.
 # Admin metrics DEV: daily UTC date selection and paginated user directory. API develop 198b5a7f487e09b4cddfaa378fd47e757d3dffc2.
 # Admin OAuth allowlist fix: 7 named Github accounts, Laura excluded. Release API develop 5801f5613c2a6839780abc61421a7fe96bf26d3f.
 # Admin access bugfix API: live org membership verification and fail-closed permission handling; api-coderats-base develop ae79d3b60be8b935e4f90e74b1a9a943ba25a1dd.

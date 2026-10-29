@@ -1,0 +1,111 @@
+name: Validate chat WebSocket feature branches (no deploy)
+
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/validate-chat-websocket.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    if: >-
+      github.repository == 'coderats-hub/coderats-deploy' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' ||
+       startsWith(github.event.head_commit.message, 'ci(chat): validate websocket'))
+    environment: dev
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - service: web
+            repository: web-coderats-base
+          - service: api
+            repository: api-coderats-base
+    steps:
+      - name: Obtain private-source read-only token
+        id: token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.CODERATS_DEPLOY_APP_ID }}
+          private-key: ${{ secrets.CODERATS_DEPLOY_APP_PRIVATE_KEY }}
+          owner: coderats-hub
+          repositories: ${{ matrix.repository }}
+          permission-contents: read
+
+      - name: Checkout reviewed feature branch
+        uses: actions/checkout@v4
+        with:
+          repository: coderats-hub/${{ matrix.repository }}
+          ref: feature/chat-websocket-realtime-20261029
+          token: ${{ steps.token.outputs.token }}
+          persist-credentials: false
+          path: source
+
+      - name: Prepare Node
+        if: matrix.service == 'web'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Prepare Java
+        if: matrix.service == 'api'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Verify frontend tests and TypeScript
+        if: matrix.service == 'web'
+        working-directory: source
+        env:
+          NEXT_PUBLIC_API_URL: https://coderats.club
+        shell: bash
+        run: |
+          set -euo pipefail
+          for cmd in "npm ci --no-audit --no-fund" "npm test" "npx tsc --noEmit" "npm run build -- --webpack"; do
+            echo "Running web validation"
+            if ! bash -c "$cmd" > "$RUNNER_TEMP/chat-validation.log" 2>&1; then
+              python3 - <<'PY'
+          import pathlib, re, os
+          s=pathlib.Path(os.environ["RUNNER_TEMP"],"chat-validation.log").read_text(errors="replace")
+          print("Failure category: frontend tests, TypeScript or build.")
+          print("TS diagnostic codes:",sorted(set(re.findall(r"TS\d+",s)))[:20])
+          print("Failing tests:",sorted(set(re.findall(r"[A-Za-z0-9_.-]+\.test\.tsx?",s)))[:20])
+          print("Check completed with failure. Full private build log intentionally suppressed.")
+          PY
+              exit 1
+            fi
+          done
+          echo "Node tests, TypeScript and production build passed."
+
+      - name: Verify API tests and compilation
+        if: matrix.service == 'api'
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x ./mvnw
+          if ! ./mvnw --batch-mode verify > "$RUNNER_TEMP/chat-validation.log" 2>&1; then
+            python3 - <<'PY'
+          import pathlib,re,os
+          s=pathlib.Path(os.environ["RUNNER_TEMP"],"chat-validation.log").read_text(errors="replace")
+          print("API Maven verify failed. Sanitized compiler locations:")
+          print(sorted(set(re.findall(r'[A-Za-z0-9_]+\.java:\[\d+,\d+\]',s)))[:30])
+          print("Compilation error:", "COMPILATION ERROR" in s)
+          print("Failed test classes:", sorted(set(re.findall(r'-- in [A-Za-z0-9_.$]+',s)))[:15])
+          print("Full private Maven log intentionally suppressed.")
+          PY
+            exit 1
+          fi
+          echo "API Maven verify passed."
+
+      - name: Wipe checked-out private source
+        if: always()
+        shell: bash
+        run: rm -rf source

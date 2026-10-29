@@ -1,4 +1,5 @@
 # Admin dashboard DEV release: explicit trusted-main push triggers; API and web must pass their private validation before Azure publication.
+# Requested DEV API admin release: api-coderats-base develop 763e8b75862cb02320d706caa438369734bf2b40.
 # DEV web release request: web-coderats-base@develop bfe2ac84984517f5b1010a9037e08fadfd524f59, hidden /admin dashboard.
 # DEV web hotfix: preserve direct-message inbox when colony group has one member; web-coderats-base@develop 00820516ce2487c629736003d1b86a2eb8335574.
 # DEV web source d12cb500422a4e266c342ba0fdd357f1e5f743fa (router-safe colony chat navigation).

@@ -33,6 +33,7 @@
 # OAuth same-origin release: API e71bf613eaf2540262274e0da9aeb68f73084199.
 # Canonical-domain API release: c2f1082f75cc1884bb9a8c32218e4a6b90ddfa08 (OAuth + CORS).
 # Visibility release verification: API commit 43e8253e242ceb20ebd2500a49234b23783bf1ed passed pinned-source CI before merge.
+# 2026-10-29: DEV API comment-like viewer state contract + integration regression.
 name: Deploy CodeRats private services to DEV
 
 # This repository is the actual workflow owner and dispatcher.

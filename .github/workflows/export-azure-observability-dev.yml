@@ -1,0 +1,80 @@
+name: Export DEV Azure observability and costs
+
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: Period in days (limited to data actually retained by Azure)
+        required: true
+        type: choice
+        default: '30'
+        options: ['7', '14', '30']
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/export-azure-observability-dev.yml'
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: coderats-dev-azure-observability-export
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    if: >-
+      github.repository == 'coderats-hub/coderats-deploy' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'ci(observability): run azure export')))
+    runs-on: ubuntu-latest
+    environment: dev
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Azure login via existing DEV OIDC identity
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Export 30-day aggregates, Azure Monitor metrics and actual costs
+        shell: bash
+        env:
+          EXPECTED_AZURE_SUBSCRIPTION: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          EXPORT_DAYS: ${{ github.event_name == 'workflow_dispatch' && inputs.days || '30' }}
+        run: |
+          set -euo pipefail
+          [[ "$(az account show --query id -o tsv)" == "$EXPECTED_AZURE_SUBSCRIPTION" ]] || {
+            echo "::error::The authenticated Azure subscription differs from the configured DEV subscription."
+            exit 1
+          }
+          python3 scripts/export_azure_observability_dev.py \
+            --environment dev \
+            --days "$EXPORT_DAYS" \
+            --output azure-report
+
+      - name: Summarize successfully collected sources
+        if: success()
+        shell: bash
+        run: cat azure-report/README.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload aggregated historical Azure report (public repository)
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coderats-dev-azure-observability-${{ github.run_id }}
+          path: azure-report/
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 6
+
+      - name: End Azure session
+        if: always()
+        run: az logout --output none || true

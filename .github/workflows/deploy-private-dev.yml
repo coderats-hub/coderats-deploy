@@ -190,6 +190,25 @@ jobs:
           fi
           if ! npm test >"$runlog" 2>&1; then
             echo "::error::Private web validation failed: unit tests."
+            # Only broad, predetermined component areas may leave the private runner.
+            # Never echo private source, test titles, assertions, paths or raw logs.
+            python3 - "$runlog" <<'PY'
+          import pathlib, re, sys
+          content = pathlib.Path(sys.argv[1]).read_text(errors='replace')
+          areas = {
+              'feed.test.tsx': 'community-feed',
+              'feed-interactions.test.tsx': 'comment-interactions',
+              'notifications.test.tsx': 'notifications',
+              'accessibility.test.tsx': 'accessibility',
+          }
+          matched = set()
+          for line in content.splitlines():
+              if 'FAIL ' in line or ('❯' in line and 'failed' in line.lower()):
+                  for filename, area in areas.items():
+                      if re.search(r'(?:^|/)'+re.escape(filename)+r'\b', line):
+                          matched.add(area)
+          print('Sanitized frontend failure area:', ','.join(sorted(matched)) if matched else 'other-or-unavailable')
+          PY
             exit 1
           fi
           if ! npx tsc --noEmit >"$runlog" 2>&1; then

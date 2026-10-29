@@ -12,7 +12,7 @@ permissions:
 jobs:
   validate:
     name: Validate ${{ matrix.service }} develop
-    # This workflow checks only; it NEVER deploys. Validate organization module plus corrected default-beta tests 2026-10-28.
+    # This workflow checks only; it NEVER deploys. Validate permanent GET participation and check-in social layout 2026-10-28.
     environment: dev
     runs-on: ubuntu-latest
     timeout-minutes: 45

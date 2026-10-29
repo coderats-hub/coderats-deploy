@@ -17,7 +17,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: coderats-dev-get-targeted-recovery
+  group: coderats-dev-get-targeted-recovery-${{ github.sha }}
   cancel-in-progress: false
 
 jobs:
@@ -62,12 +62,33 @@ jobs:
 
           # Never rewrite the persistent scheduled job: current env contains
           # secret references; the template override is only for this execution.
-          active="$(az containerapp job execution list -g "$rg" -n "$job" --query '[].properties.status' -o tsv)"
-          if printf '%s\n' "$active" | grep -Eiq '^(Running|Pending|Processing)$'; then
-            echo "::error::GET job already running. Cannot safely start overlapping repair."
-            exit 1
-          fi
-          api_image="$(az containerapp show -g "$rg" -n "$api" --query properties.template.containers[0].image -o tsv)"
+          # Stop only an outdated execution from THIS exact manual replay.
+          # Do not modify or stop unrelated scheduled GET workers.
+          mapfile -t active_executions < <(az containerapp job execution list -g "$rg" -n "$job" \
+            --query "[?properties.status=='Running' || properties.status=='Pending' || properties.status=='Processing'].name" -o tsv)
+          for running in "${active_executions[@]}"; do
+            [[ "$running" =~ ^[a-z0-9-]{4,80}$ ]] || exit 1
+            marker="$(az containerapp job execution show -g "$rg" -n "$job" \
+              --job-execution-name "$running" \
+              --query "properties.template.containers[0].env[?name=='GET_RECOVERY_VERSION'].value | [0]" -o tsv 2>/dev/null || true)"
+            if [[ "$marker" != "recover-marialmeida1-20261029-v1" ]]; then
+              echo "::error::Unrelated GET worker is active; refusing to interfere"
+              exit 1
+            fi
+            az containerapp job stop -g "$rg" -n "$job" \
+              --job-execution-name "$running" --only-show-errors -o none
+            echo "Superseded the earlier execution of this same account recovery." >> "$GITHUB_STEP_SUMMARY"
+          done
+          expected_source=98b9d857b2b9eb17c4b18242cc4ec53e96bfea42
+          api_image=""
+          for i in $(seq 1 120); do
+            api_image="$(az containerapp show -g "$rg" -n "$api" --query properties.template.containers[0].image -o tsv)"
+            [[ "$api_image" == "$registry.azurecr.io/api-coderats-base:$expected_source-"* ]] && break
+            sleep 10
+          done
+          [[ "$api_image" == "$registry.azurecr.io/api-coderats-base:$expected_source-"* ]] || {
+            echo "::error::Recovery-capable API image was not deployed"; exit 1;
+          }
           if [[ "$api_image" == "$registry.azurecr.io/api-coderats-base@sha256:"* ]]; then
             digest="${api_image##*@}"
           elif [[ "$api_image" == "$registry.azurecr.io/api-coderats-base:"* ]]; then

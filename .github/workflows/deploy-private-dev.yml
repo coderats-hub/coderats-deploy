@@ -1,3 +1,4 @@
+# 2026-10-29: Safe qualitative frontend failure diagnostics, no private stack traces.
 # 2026-10-29: Categorize private chat test failures by subsystem without exposing logs.
 # 2026-10-29: Sanitized chat-category test diagnostics for DEV release.
 # 2026-10-29: DEV web release of colony owner controls; web develop 96d4ef9bd2a3cc25d57cb8662f1cbfd436a4690c.
@@ -236,6 +237,14 @@ jobs:
                       if re.search(r'(?:^|/)'+re.escape(filename)+r'\b', line):
                           matched.add(area)
           print('Sanitized frontend failure area:', ','.join(sorted(matched)) if matched else 'other-or-unavailable')
+          signatures = {
+              'module_resolution': r'Cannot find module|Failed to resolve import|Failed to load url|No matching export',
+              'module_initialization': r'Error when evaluating SSR module|ReferenceError:|SyntaxError:',
+              'runtime_type': r'TypeError:',
+              'expectation': r'AssertionError:|Unable to find|expected .* to ',
+              'transform': r'Transform failed|Unexpected token|Parse failure',
+          }
+          print('Sanitized frontend failure kinds:', ','.join(k for k, v in signatures.items() if re.search(v, content)) or 'unclassified')
           PY
             exit 1
           fi

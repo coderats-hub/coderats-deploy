@@ -38,6 +38,7 @@
 # 2026-10-29: Retry DEV web with stable comment-like async tests; source web develop f155b90f6452eda2596e3a594f4fd6fed2cff7a6.
 # 2026-10-29: DEV web backwards-compatible comment like hydration; web develop 170133d4d0885b2bea5133cb637e27fa7794cdf2.
 # 2026-10-29: DEV web UI: remove manual feed refresh, auto-read notifications and animated rat wheel loader.
+# 2026-10-29: Re-run DEV web after awaiting the async feed publication request in the abort test; source ab9569b17c235459728398a68a2a59e001f7e3e8.
 name: Deploy CodeRats private services to DEV
 
 # This repository is the actual workflow owner and dispatcher.

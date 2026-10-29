@@ -1,3 +1,4 @@
+# Release permanent GET: V50, opt-out endpoint disabled and reverified opt-out replay. api-coderats-base@develop 901a1f75545b2e053193f7454abb3ac984889bfc; CI 40796674804.
 # DEV web Organizations V1: navigation, two scoreboards, linked colonies, rounded check-in score, beta on by default. web-coderats-base@develop 52fcdbdec84e4707828e8e9a7904ef06453a48cd, validated 40786894290.
 # DEV API Organizations V1: fair organization/colony rankings and V49 migration. api-coderats-base@develop 3c464165d1cc2f3c7e2c31af9236f5f0b1828605, validated central run 40786894290.
 # DEV frontend: beta media canvas now matches AI/ratings widths, with viewport-limited height. Source web-coderats-base@develop 47699a5fa4969cc92840c3ab58ba3c2aea7d751a; validated run 40772906558.

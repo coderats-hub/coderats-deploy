@@ -1,3 +1,4 @@
+# Admin dashboard DEV release: explicit trusted-main push triggers; API and web must pass their private validation before Azure publication.
 # DEV web hotfix: preserve direct-message inbox when colony group has one member; web-coderats-base@develop 00820516ce2487c629736003d1b86a2eb8335574.
 # DEV web source d12cb500422a4e266c342ba0fdd357f1e5f743fa (router-safe colony chat navigation).
 # DEV web colony image overlay removal, group chat navigation and organization display; source 83a0571ed8cbbbb58fa0574478bb9f48bafd987a.
@@ -75,19 +76,21 @@ permissions:
   id-token: write
 
 concurrency:
-  group: "coderats-central-dev-${{ github.event_name == 'push' && github.event.head_commit.message == 'ci(dev): publish proficiency badges web' && 'web' || github.event_name == 'push' && github.event.head_commit.message == 'ci(dev): publish beta4 api' && 'api' || (github.event_name == 'push' || github.event_name == 'schedule') && 'get-worker' || inputs.service }}"
+  group: "coderats-central-dev-${{ github.event_name == 'push' && github.event.head_commit.message == 'ci(dev): release admin dashboard api' && 'api' || github.event_name == 'push' && github.event.head_commit.message == 'ci(dev): release admin dashboard web' && 'web' || github.event_name == 'push' && github.event.head_commit.message == 'ci(dev): publish proficiency badges web' && 'web' || github.event_name == 'push' && github.event.head_commit.message == 'ci(dev): publish beta4 api' && 'api' || (github.event_name == 'push' || github.event_name == 'schedule') && 'get-worker' || inputs.service }}"
   cancel-in-progress: false
 
 jobs:
   deploy:
-    name: "Build and release ${{ github.event_name == 'push' && github.event.head_commit.message == 'ci(dev): publish proficiency badges web' && 'web' || github.event_name == 'push' && github.event.head_commit.message == 'ci(dev): publish beta4 api' && 'api' || (github.event_name == 'push' || github.event_name == 'schedule') && 'get-worker' || inputs.service }} (private source)"
+    name: "Build and release ${{ github.event_name == 'push' && github.event.head_commit.message == 'ci(dev): release admin dashboard api' && 'api' || github.event_name == 'push' && github.event.head_commit.message == 'ci(dev): release admin dashboard web' && 'web' || github.event_name == 'push' && github.event.head_commit.message == 'ci(dev): publish proficiency badges web' && 'web' || github.event_name == 'push' && github.event.head_commit.message == 'ci(dev): publish beta4 api' && 'api' || (github.event_name == 'push' || github.event_name == 'schedule') && 'get-worker' || inputs.service }} (private source)"
     if: >-
       github.repository == 'coderats-hub/coderats-deploy' &&
       github.ref == 'refs/heads/main' &&
       (github.event_name == 'workflow_dispatch' ||
        github.event_name == 'schedule' ||
        (github.event_name == 'push' &&
-        (github.event.head_commit.message == 'ci(dev): publish proficiency badges web' ||
+        (github.event.head_commit.message == 'ci(dev): release admin dashboard api' ||
+         github.event.head_commit.message == 'ci(dev): release admin dashboard web' ||
+         github.event.head_commit.message == 'ci(dev): publish proficiency badges web' ||
          github.event.head_commit.message == 'ci(dev): publish beta4 api' ||
           github.event.head_commit.message == 'ci(dev): verify GET worker')))
     environment: dev
@@ -98,7 +101,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 70
     env:
-      DEPLOY_SERVICE: "${{ github.event_name == 'push' && github.event.head_commit.message == 'ci(dev): publish proficiency badges web' && 'web' || github.event_name == 'push' && github.event.head_commit.message == 'ci(dev): publish beta4 api' && 'api' || (github.event_name == 'push' || github.event_name == 'schedule') && 'get-worker' || inputs.service }}"
+      DEPLOY_SERVICE: "${{ github.event_name == 'push' && github.event.head_commit.message == 'ci(dev): release admin dashboard api' && 'api' || github.event_name == 'push' && github.event.head_commit.message == 'ci(dev): release admin dashboard web' && 'web' || github.event_name == 'push' && github.event.head_commit.message == 'ci(dev): publish proficiency badges web' && 'web' || github.event_name == 'push' && github.event.head_commit.message == 'ci(dev): publish beta4 api' && 'api' || (github.event_name == 'push' || github.event_name == 'schedule') && 'get-worker' || inputs.service }}"
     defaults:
       run:
         shell: bash

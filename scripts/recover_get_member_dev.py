@@ -10,7 +10,7 @@ import pathlib
 import re
 
 EXPECTED = "marialmeida1"
-VERSION = "recover-marialmeida1-20261029-v1"
+VERSION = "recover-marialmeida1-20261029-v2"
 
 
 def override(template: dict, username: str, version: str, image: str) -> dict:

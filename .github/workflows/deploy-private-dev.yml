@@ -1,3 +1,4 @@
+# 2026-10-29: Bounded numeric parser location diagnostic for private chat checks.
 # 2026-10-29: Safe qualitative frontend failure diagnostics, no private stack traces.
 # 2026-10-29: Categorize private chat test failures by subsystem without exposing logs.
 # 2026-10-29: Sanitized chat-category test diagnostics for DEV release.
@@ -245,6 +246,16 @@ jobs:
               'transform': r'Transform failed|Unexpected token|Parse failure',
           }
           print('Sanitized frontend failure kinds:', ','.join(k for k, v in signatures.items() if re.search(v, content)) or 'unclassified')
+          for label, pattern in [('chat_component', r'direct-messages\\.tsx:(\\d+):(\\d+)'),
+                                 ('dm_contract', r'contract\\.ts:(\\d+):(\\d+)')]:
+              match = re.search(pattern, content)
+              if match:
+                  print('Sanitized frontend location:', label, *match.groups())
+          for label, phrase in [('transform_failed', 'Transform failed'),
+                                ('unexpected_token', 'Unexpected token'),
+                                ('parse_failure', 'Parse failure')]:
+              if phrase in content:
+                  print('Sanitized frontend transform marker:', label)
           PY
             exit 1
           fi

@@ -1,3 +1,4 @@
+# 2026-10-29: Categorize private chat test failures by subsystem without exposing logs.
 # 2026-10-29: Sanitized chat-category test diagnostics for DEV release.
 # 2026-10-29: DEV web release of colony owner controls; web develop 96d4ef9bd2a3cc25d57cb8662f1cbfd436a4690c.
 # 2026-10-29: Release chat owner moderation with explicit protected API/web DEV push intents.
@@ -222,11 +223,11 @@ jobs:
               'feed-interactions.test.tsx': 'comment-interactions',
               'notifications.test.tsx': 'notifications',
               'accessibility.test.tsx': 'accessibility',
-              'dm-colony-enhancements.test.ts': 'chat',
-              'dm-contract.test.ts': 'chat',
-              'dm-management.test.tsx': 'chat',
-              'direct-messages.test.tsx': 'chat',
-              'dm-colony-owner.test.tsx': 'chat',
+              'dm-colony-enhancements.test.ts': 'chat-colony-contract',
+              'dm-contract.test.ts': 'chat-parser-contract',
+              'dm-management.test.tsx': 'chat-management-ui',
+              'direct-messages.test.tsx': 'chat-inbox-ui',
+              'dm-colony-owner.test.tsx': 'chat-owner-ui',
           }
           matched = set()
           for line in content.splitlines():

@@ -1,0 +1,139 @@
+name: One-shot restore GET progression for marialmeida1 (DEV)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/replay-get-marialmeida1-dev.yml"
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: Type RECOVER_MARIALMEIDA1_DEV to run only this account's replay
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: coderats-dev-get-targeted-recovery
+  cancel-in-progress: false
+
+jobs:
+  recover:
+    name: Reverify all historical check-ins and rebuild GET progression
+    if: >-
+      github.repository == 'coderats-hub/coderats-deploy' &&
+      github.ref == 'refs/heads/main' &&
+      ((github.event_name == 'push' &&
+        github.event.head_commit.message == 'ci(dev): replay GET marialmeida1 once') ||
+       (github.event_name == 'workflow_dispatch' &&
+        inputs.confirmation == 'RECOVER_MARIALMEIDA1_DEV'))
+    runs-on: ubuntu-latest
+    environment: dev
+    timeout-minutes: 65
+    steps:
+      - name: Checkout one-shot helper (no private source required)
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Confirm protected Azure DEV subscription and worker availability
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Verify immutable API image and write temporary execution-only template
+        id: prepare
+        shell: bash
+        env:
+          EXPECTED_SUBSCRIPTION: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          set -euo pipefail
+          rg=rg-coderats-base-dev
+          api=ca-coderats-base-api-dev
+          job=caj-coderats-base-get-dev
+          registry=crcoderatsbasedev9e0045
+          [[ "$(az account show --query id -o tsv)" == "$EXPECTED_SUBSCRIPTION" ]] || exit 1
+          test "$(az containerapp job show -g "$rg" -n "$job" --query name -o tsv)" = "$job"
+
+          # Never rewrite the persistent scheduled job: current env contains
+          # secret references; the template override is only for this execution.
+          active="$(az containerapp job execution list -g "$rg" -n "$job" --query '[].properties.status' -o tsv)"
+          if printf '%s\n' "$active" | grep -Eiq '^(Running|Pending|Processing)$'; then
+            echo "::error::GET job already running. Cannot safely start overlapping repair."
+            exit 1
+          fi
+          api_image="$(az containerapp show -g "$rg" -n "$api" --query properties.template.containers[0].image -o tsv)"
+          if [[ "$api_image" == "$registry.azurecr.io/api-coderats-base@sha256:"* ]]; then
+            digest="${api_image##*@}"
+          elif [[ "$api_image" == "$registry.azurecr.io/api-coderats-base:"* ]]; then
+            manifest="${api_image#"$registry.azurecr.io/"}"
+            digest="$(az acr manifest show-metadata -r "$registry" -n "$manifest" --query digest -o tsv)"
+          else
+            echo "::error::Unexpected API image repository"; exit 1
+          fi
+          [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]] || exit 1
+          immutable="$registry.azurecr.io/api-coderats-base@$digest"
+          tmp="$(mktemp -d)"
+          chmod 700 "$tmp"
+          echo "recovery_tmp=$tmp" >> "$GITHUB_OUTPUT"
+          az containerapp job show -g "$rg" -n "$job" --query properties.template -o json > "$tmp/template.json"
+          python3 scripts/recover_get_member_dev.py \
+            --source "$tmp/template.json" --output "$tmp/recovery.yaml" \
+            --username marialmeida1 --version recover-marialmeida1-20261029-v1 \
+            --image "$immutable"
+          echo "### GET recovery" >> "$GITHUB_STEP_SUMMARY"
+          echo "Verified single-account DEV replay using immutable deployed API image." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Start ONE isolated, account-scoped replay execution
+        id: start
+        shell: bash
+        run: |
+          set -euo pipefail
+          execution="$(az containerapp job start -g rg-coderats-base-dev \
+            -n caj-coderats-base-get-dev \
+            --yaml "${{ steps.prepare.outputs.recovery_tmp }}/recovery.yaml" \
+            --query name -o tsv)"
+          [[ "$execution" =~ ^[a-z0-9-]{4,80}$ ]] || {
+            echo "::error::Azure did not return a valid job execution"; exit 1;
+          }
+          echo "execution=$execution" >> "$GITHUB_OUTPUT"
+          echo "GET recovery execution was accepted by Azure." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify full processing completed successfully (not merely queued)
+        shell: bash
+        env:
+          EXECUTION: ${{ steps.start.outputs.execution }}
+        run: |
+          set -euo pipefail
+          [[ "$EXECUTION" =~ ^[a-z0-9-]{4,80}$ ]] || exit 1
+          for i in $(seq 1 355); do
+            state="$(az containerapp job execution show \
+              -g rg-coderats-base-dev -n caj-coderats-base-get-dev \
+              --job-execution-name "$EXECUTION" \
+              --query properties.status -o tsv 2>/dev/null || true)"
+            case "$state" in
+              Succeeded)
+                echo "All targeted check-ins were acknowledged, and GET reports verified technology progression." >> "$GITHUB_STEP_SUMMARY"
+                exit 0 ;;
+              Failed|Stopped|Canceled|Cancelled)
+                echo "::error::Recovery did not finish successfully ($state). No badges were fabricated."
+                exit 1 ;;
+            esac
+            sleep 10
+          done
+          echo "::error::Timed out without confirmed successful completion; rerun with same idempotency version after diagnosis."
+          exit 1
+
+      - name: Remove temporary private job template and logout
+        if: always()
+        shell: bash
+        env:
+          TMP: ${{ steps.prepare.outputs.recovery_tmp }}
+        run: |
+          if [[ -n "$TMP" && "$TMP" == /tmp/* ]]; then rm -rf -- "$TMP"; fi
+          az logout >/dev/null 2>&1 || true

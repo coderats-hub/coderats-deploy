@@ -35,6 +35,7 @@
 # Visibility release verification: API commit 43e8253e242ceb20ebd2500a49234b23783bf1ed passed pinned-source CI before merge.
 # 2026-10-29: DEV API comment-like viewer state contract + integration regression.
 # 2026-10-29: DEV web comment-like UI hydration + session regression.
+# 2026-10-29: Retry DEV web with stable comment-like async tests; source web develop f155b90f6452eda2596e3a594f4fd6fed2cff7a6.
 name: Deploy CodeRats private services to DEV
 
 # This repository is the actual workflow owner and dispatcher.

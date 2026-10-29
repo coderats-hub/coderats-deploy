@@ -1,4 +1,5 @@
 # Admin access bugfix API: live org membership verification and fail-closed permission handling; api-coderats-base develop ae79d3b60be8b935e4f90e74b1a9a943ba25a1dd.
+# Admin access bugfix WEB: hidden route redirects verified nonmembers to /app; web-coderats-base develop 3d65f439d7833525d3aa8060f8976d42eaaad61b.
 # Admin dashboard DEV release: explicit trusted-main push triggers; API and web must pass their private validation before Azure publication.
 # Requested DEV web admin release: web-coderats-base develop bfe2ac84984517f5b1010a9037e08fadfd524f59.
 # Requested DEV API admin release: api-coderats-base develop 763e8b75862cb02320d706caa438369734bf2b40.

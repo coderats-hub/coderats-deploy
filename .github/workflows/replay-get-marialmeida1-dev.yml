@@ -71,7 +71,7 @@ jobs:
             marker="$(az containerapp job execution show -g "$rg" -n "$job" \
               --job-execution-name "$running" \
               --query "properties.template.containers[0].env[?name=='GET_RECOVERY_VERSION'].value | [0]" -o tsv 2>/dev/null || true)"
-            if [[ "$marker" != "recover-marialmeida1-20261029-v1" ]]; then
+            if [[ "$marker" != "recover-marialmeida1-20261029-v2" ]]; then
               echo "::error::Unrelated GET worker is active; refusing to interfere"
               exit 1
             fi
@@ -79,7 +79,7 @@ jobs:
               --job-execution-name "$running" --only-show-errors -o none
             echo "Superseded the earlier execution of this same account recovery." >> "$GITHUB_STEP_SUMMARY"
           done
-          expected_source=98b9d857b2b9eb17c4b18242cc4ec53e96bfea42
+          expected_source=1b69d56a033d830b22a2650626ad7b038ae83ff6
           api_image=""
           for i in $(seq 1 120); do
             api_image="$(az containerapp show -g "$rg" -n "$api" --query properties.template.containers[0].image -o tsv)"
@@ -105,7 +105,7 @@ jobs:
           az containerapp job show -g "$rg" -n "$job" --query properties.template -o json > "$tmp/template.json"
           python3 scripts/recover_get_member_dev.py \
             --source "$tmp/template.json" --output "$tmp/recovery.yaml" \
-            --username marialmeida1 --version recover-marialmeida1-20261029-v1 \
+            --username marialmeida1 --version recover-marialmeida1-20261029-v2 \
             --image "$immutable"
           echo "### GET recovery" >> "$GITHUB_STEP_SUMMARY"
           echo "Verified single-account DEV replay using immutable deployed API image." >> "$GITHUB_STEP_SUMMARY"

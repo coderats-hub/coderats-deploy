@@ -12,7 +12,7 @@ permissions:
 jobs:
   validate:
     name: Validate ${{ matrix.service }} develop
-    # This workflow checks only; it NEVER deploys. Validate hard-on GET/definitive check-ins including reactivation and privacy tests 2026-10-28.
+    # This workflow checks only; it NEVER deploys. Validate scoped GET recovery runner and one-shot replay safety 2026-10-29.
     environment: dev
     runs-on: ubuntu-latest
     timeout-minutes: 45

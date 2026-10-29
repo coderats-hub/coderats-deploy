@@ -1,3 +1,4 @@
+# DEV web hotfix: preserve direct-message inbox when colony group has one member; web-coderats-base@develop 00820516ce2487c629736003d1b86a2eb8335574.
 # DEV web source d12cb500422a4e266c342ba0fdd357f1e5f743fa (router-safe colony chat navigation).
 # DEV web colony image overlay removal, group chat navigation and organization display; source 83a0571ed8cbbbb58fa0574478bb9f48bafd987a.
 # DEV API colony chat membership migration V51, organization endpoint; source e938869398cdeec860f68ffc816d8023f4acf2ec.

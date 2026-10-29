@@ -60,7 +60,7 @@ jobs:
           distribution: temurin
           java-version: '21'
 
-      - name: Verify frontend tests and TypeScript
+      - name: Verify frontend tests, TypeScript and production build independently
         if: matrix.service == 'web'
         working-directory: source
         env:
@@ -68,21 +68,47 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for cmd in "npm ci --no-audit --no-fund" "npm test" "npx tsc --noEmit" "npm run build -- --webpack"; do
-            echo "Running web validation"
-            if ! bash -c "$cmd" > "$RUNNER_TEMP/chat-validation.log" 2>&1; then
-              python3 - <<'PY'
-          import pathlib, re, os
-          s=pathlib.Path(os.environ["RUNNER_TEMP"],"chat-validation.log").read_text(errors="replace")
-          print("Failure category: frontend tests, TypeScript or build.")
-          print("TS diagnostic codes:",sorted(set(re.findall(r"TS\d+",s)))[:20])
-          print("Failing tests:",sorted(set(re.findall(r"[A-Za-z0-9_.-]+\.test\.tsx?",s)))[:20])
-          print("Check completed with failure. Full private build log intentionally suppressed.")
+          npm ci --no-audit --no-fund > "$RUNNER_TEMP/chat-install.log" 2>&1
+          failed=0
+          if npm test -- --reporter=json --outputFile="$RUNNER_TEMP/chat-tests.json" > "$RUNNER_TEMP/chat-tests.log" 2>&1; then
+            echo "Vitest: PASS"
+          else
+            failed=1
+            python3 - <<'PY'
+          import pathlib, json, os
+          p=pathlib.Path(os.environ["RUNNER_TEMP"],"chat-tests.json")
+          if not p.exists():
+              print("Vitest: failed before JSON report could be emitted")
+          else:
+              d=json.loads(p.read_text(errors="replace"))
+              print("Vitest: FAIL; failed tests:",d.get("numFailedTests"),"failed suites:",d.get("numFailedTestSuites"))
+              print("Failed suite basenames:",
+                [pathlib.PurePath(x.get("name","")).name for x in d.get("testResults",[]) if x.get("status")=="failed"][:25])
           PY
-              exit 1
-            fi
-          done
-          echo "Node tests, TypeScript and production build passed."
+          fi
+          if npx tsc --noEmit > "$RUNNER_TEMP/chat-tsc.log" 2>&1; then
+            echo "TypeScript: PASS"
+          else
+            failed=1
+            python3 - <<'PY'
+          import pathlib,os,re
+          s=pathlib.Path(os.environ["RUNNER_TEMP"],"chat-tsc.log").read_text(errors="replace")
+          print("TypeScript: FAIL", sorted(set(re.findall(r"TS\d+",s)))[:25])
+          print("Compiler locations:", sorted(set(re.findall(r"[\w.-]+\.tsx?\(\d+,\d+\)",s)))[:30])
+          PY
+          fi
+          if npm run build -- --webpack > "$RUNNER_TEMP/chat-build.log" 2>&1; then
+            echo "Next.js build: PASS"
+          else
+            failed=1
+            python3 - <<'PY'
+          import pathlib,re,os
+          s=pathlib.Path(os.environ["RUNNER_TEMP"],"chat-build.log").read_text(errors="replace")
+          print("Next.js build: FAIL; TypeScript codes:", sorted(set(re.findall(r"TS\d+",s)))[:25])
+          print("Compiler locations:", sorted(set(re.findall(r"[\w.-]+\.tsx?\(\d+,\d+\)",s)))[:25])
+          PY
+          fi
+          exit "$failed"
 
       - name: Verify API tests and compilation
         if: matrix.service == 'api'

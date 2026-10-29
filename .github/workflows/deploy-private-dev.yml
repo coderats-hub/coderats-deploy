@@ -1,3 +1,4 @@
+# DEV web source d12cb500422a4e266c342ba0fdd357f1e5f743fa (router-safe colony chat navigation).
 # DEV web colony image overlay removal, group chat navigation and organization display; source 83a0571ed8cbbbb58fa0574478bb9f48bafd987a.
 # DEV API colony chat membership migration V51, organization endpoint; source e938869398cdeec860f68ffc816d8023f4acf2ec.
 # DEV GET recovery runner and versioned scoped replay for all marialmeida1 check-ins. api-coderats-base@develop 98b9d857b2b9eb17c4b18242cc4ec53e96bfea42; backend Maven CI validated 40798965432.

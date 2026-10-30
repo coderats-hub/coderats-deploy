@@ -1,5 +1,5 @@
 name: Validate chat WebSocket feature branches (no deploy)
-# Verify optimistic outbox, message retries and typing signals without publishing private sources.
+# Validate final optimistic delivery UX, retry tests and typing signals from latest feature heads.
 
 on:
   push:

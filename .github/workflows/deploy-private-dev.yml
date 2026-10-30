@@ -1,3 +1,4 @@
+# 2026-10-30: Retry DEV check-in mentions API after test constructor correction; source develop 8c6948f4311599a84c3f2a19a4afd830fb7cfe6d.
 # 2026-10-29: DEV check-in user mentions web release; source web-coderats-base develop dc1903f3424625724b7a54c123653e22864f70ed.
 # 2026-10-29: DEV check-in user mentions API; source api-coderats-base develop e7767902637b760c018f639b29c8e6a5d0715d10.
 # 2026-10-29: DEV web release retry after mounting resource before Suspense wait, web develop e96e857d2f852ad8014790f3b88629ebc4953c54.

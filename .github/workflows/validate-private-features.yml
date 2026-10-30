@@ -138,6 +138,25 @@ jobs:
                   print('failure-section-present')
               if 'Failed to execute goal' in line: print('maven-goal-failed')
           PY
+            # Emit only sanitized synthetic GET test identifiers and source-line numbers;
+            # never publish private Maven logs, source code, SQL or assertion values.
+            python3 - <<'PY'
+          import pathlib, re, xml.etree.ElementTree as ET
+          roots = pathlib.Path('target/surefire-reports')
+          for path in roots.glob('TEST-*GetWorkerEvidencePipelinePostgresTest.xml'):
+              root = ET.parse(path).getroot()
+              for case in root.iter('testcase'):
+                  problem = case.find('failure')
+                  if problem is None: problem = case.find('error')
+                  if problem is None: continue
+                  name = case.get('name','')
+                  kind = problem.get('type','')
+                  if not re.fullmatch(r'[A-Za-z0-9_.-]+', name): continue
+                  if not re.fullmatch(r'[A-Za-z0-9_.$]+', kind): kind='unknown'
+                  trace = problem.text or ''
+                  line = re.search(r'GetWorkerEvidencePipelinePostgresTest\\.java:(\\d+)', trace)
+                  print('GET_TEST_FAILURE:', name, kind, line.group(1) if line else '-')
+          PY
             exit 1
           fi
           echo "API Maven verify passed"

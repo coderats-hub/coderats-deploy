@@ -1,3 +1,4 @@
+# 2026-10-30: Verify surviving evidence count retains per-evidence semantics after GET partial deletion.
 # 2026-10-30: Validate synthetic trusted React graph retraction across four check-ins and grid UI.
 # 2026-10-30: GET worker live-source regression with verified React JSX and peer support retained.
 # 2026-10-30: Verify partial GET evidence read after deletion and safe React projection regression.

@@ -34,7 +34,7 @@ jobs:
             echo "Azure Log Analytics workspace unavailable"
             exit 0
           fi
-          for source in app-requests container-http-cl container-http; do
+          for source in app-requests container-http-cl container-http container-console; do
             case "$source" in
               app-requests)
                 query='AppRequests | where TimeGenerated > ago(3h) | where tostring(Url) has "/api/v1/dms/ws" | summarize total=count() by status=tostring(ResultCode)'
@@ -44,6 +44,11 @@ jobs:
                 ;;
               container-http)
                 query='ContainerAppHTTPLogs | where TimeGenerated > ago(3h) | where tostring(column_ifexists("Path","")) has "/api/v1/dms/ws" | summarize total=count() by status=tostring(column_ifexists("StatusCode",0))'
+                ;;
+              container-console)
+                # Only aggregate this gateway's fixed status-code diagnostic;
+                # NEVER print raw logs, URLs, messages, headers or identifiers.
+                query='ContainerAppConsoleLogs_CL | where TimeGenerated > ago(30m) | where tostring(column_ifexists("Log_s","")) has "Chat WS handshake rejected by API" | extend status=extract(@"status=([1-5][0-9][0-9])",1,tostring(column_ifexists("Log_s",""))) | summarize total=count() by status'
                 ;;
             esac
             if az monitor log-analytics query --workspace "$workspace" --analytics-query "$query" -o json > "$RUNNER_TEMP/coderats-chat-status.json" 2>/dev/null; then

@@ -1,3 +1,4 @@
+# 2026-10-29: Explicit requested DEV frontend release from web-coderats-base develop @ 4529b44ff16e6073060c75cae93d00a0b654eccd; comment-only dispatch.
 # 2026-10-30: Release corrected WebSocket precedence regression test; API develop 6724e6d52cc1bf23f355f995671ad3a4d745bd8c.
 # 2026-10-30: Compile-fix WebSocket priority via ServletWebSocketHandlerRegistry; API develop c0f605053d5f174510e1466639934c1a1944459b.
 # 2026-10-30: Release API WebSocket route precedence fix and regression test, develop 599d72adde9f3331fb74728c6360306d00f5ee44.

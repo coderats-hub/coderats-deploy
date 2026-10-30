@@ -1,3 +1,4 @@
+# 2026-10-29: CodeRats chat WebSocket: deploy merged API develop for realtime and typing events.
 # 2026-10-29: Fix numeric chat parser diagnostic regular expressions.
 # 2026-10-29: Bounded numeric parser location diagnostic for private chat checks.
 # 2026-10-29: Safe qualitative frontend failure diagnostics, no private stack traces.

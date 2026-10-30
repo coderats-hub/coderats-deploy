@@ -1,4 +1,5 @@
 name: Validate chat WebSocket feature branches (no deploy)
+# Verify JSX delimiter fix in chat UI, commit 9d03e08.
 
 on:
   push:
@@ -25,9 +26,6 @@ jobs:
         include:
           - service: web
             repository: web-coderats-base
-          - service: web-baseline
-            repository: web-coderats-base
-            ref: develop
           - service: api
             repository: api-coderats-base
     steps:

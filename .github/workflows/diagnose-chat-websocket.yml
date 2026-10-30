@@ -1,0 +1,37 @@
+name: Diagnose first-party chat WebSocket (public anonymous handshake)
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/diagnose-chat-websocket.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    if: github.repository == 'coderats-hub/coderats-deploy'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Check public ingress and direct API handshake without credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Only synthetic, anonymous requests. No cookies or personal data.
+          for base in \
+              'https://coderats.club' \
+              'https://ca-coderats-base-api-dev.wittyforest-08a02f79.eastus.azurecontainerapps.io'; do
+            case "$base" in
+              https://coderats.club) label=frontend ;;
+              *) label=azure-api ;;
+            esac
+            code="$(curl -sS --max-time 8 -o /dev/null -w '%{http_code}' "$base/actuator/health" 2>/dev/null || true)"
+            echo "$label health route status: ${code:-unavailable}"
+            code="$(curl -sS --http1.1 --max-time 8 -o /dev/null -w '%{http_code}' \
+              -H 'Connection: Upgrade' \
+              -H 'Upgrade: websocket' \
+              -H 'Sec-WebSocket-Version: 13' \
+              -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
+              -H 'Origin: https://coderats.club' \
+              "$base/api/v1/dms/ws" 2>/dev/null || true)"
+            echo "$label anonymous WebSocket handshake status: ${code:-unavailable}"
+          done

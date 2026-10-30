@@ -1,3 +1,4 @@
+# 2026-10-30: Sanitized TS compiler source location ordinal and line to fix release TS2769 without publishing private logs.
 # 2026-10-30: DEV web release after tests pass and narrowing technical-panel HTMLElement for TS2769; web develop fcccb48f2886f93593d4f756b75e84abfefbefce.
 # 2026-10-30: Release permanent grid and Orgs UI after fixing public Docker chip test to select within technical identity; frontend develop 2bb4665a3f88f147ee627b9eaa08d2f8056df723.
 # 2026-10-30: DEV web release after updating four stale feed, beta, Orgs, and public-profile regression tests; web-coderats-base@develop 8cbbc2281001a2d9d132ee2f5501f39ee2061cb5.
@@ -299,7 +300,7 @@ jobs:
           # Only safe, allowlisted test file categories and failure indices; no assertion text.
           import json
           try:
-              report=json.loads(pathlib.Path('/tmp/nonexistent-report').read_text()) if False else json.loads(pathlib.Path(__import__('os').environ['RUNNER_TEMP'], 'coderats-test-report.json').read_text())
+              report=json.loads(pathlib.Path(__import__('os').environ['RUNNER_TEMP'], 'coderats-test-report.json').read_text())
               allow = {
                   'profile.test.tsx': 'profile-ui',
                   'get-technical-identity.test.tsx': 'technical-identity',
@@ -362,6 +363,26 @@ jobs:
           content = pathlib.Path(sys.argv[1]).read_text(errors="replace")
           codes = re.findall(r"error (TS[0-9]+)", content)
           print("Sanitized TypeScript error counts:", {k: codes.count(k) for k in sorted(set(codes))})
+          # Diagnose by numeric file ordinal and source position, never emit code or private paths.
+          inventory = sorted(str(p) for folder in ('app','components','lib','tests') for p in pathlib.Path(folder).rglob('*.ts*') if p.is_file())
+          allowed = {
+              'public-member-page.test.tsx': 'public-profile-tests',
+              'member-profile.tsx': 'member-profile',
+              'technical-identity.tsx': 'technical-identity',
+              'profile-dashboard.tsx': 'profile-dashboard',
+              'checkin-grid.tsx': 'checkin-grid',
+              'check-in-history.tsx': 'check-in-history',
+              'colony-feed.tsx': 'colony-feed',
+              'organizations-ui.test.tsx': 'orgs-tests',
+              'page.tsx': 'page-component',
+          }
+          for line in content.splitlines():
+              m=re.search(r'^(.*?)\((\d+),(\d+)\): error (TS\d+):',line)
+              if m:
+                  path,row,col,code=m.groups()
+                  ordinal=(inventory.index(path)+1) if path in inventory else 0
+                  print('Sanitized TypeScript location:',allowed.get(pathlib.Path(path).name,'other'),'file-ordinal:',ordinal,'line:',row,'column:',col,'code:',code)
+
           PY
             exit 1
           fi

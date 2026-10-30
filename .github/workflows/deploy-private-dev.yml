@@ -1,3 +1,4 @@
+# 2026-10-30: Private test-inventory ordinal diagnostics for release, no private path or failure message exposed.
 # 2026-10-30: Safe JSON test diagnostics for failed DEV frontend release; bounded categories/ordinals, no private assertions.
 # 2026-10-30: DEV web release retry after correcting lazy profile history assertion; web-coderats-base@develop d4a97252bd47b9be0b34f821307513dfdea13deb.
 # 2026-10-30: DEV web retries: add safe ordinal-only identification for outstanding private profile regression tests; source d79b63bd286008428fb8d2d10ea9739367a6e52d.
@@ -310,13 +311,15 @@ jobs:
                   'profile-cache.test.tsx': 'profile-cache',
                   'accessibility.test.tsx': 'accessibility',
               }
+              # An ordinal in the sorted test filename inventory identifies an unknown suite without revealing its path.
+              inventory = sorted([p.name for p in pathlib.Path('tests').glob('*.test.ts*')])
               for suite in report.get('testResults',[]):
                   failing = [i+1 for i,t in enumerate(suite.get('assertionResults',[])) if t.get('status') == 'failed']
                   if failing or suite.get('status')=='failed':
                       name=pathlib.Path(suite.get('name','')).name
                       area=allow.get(name,'other-test')
                       numbers=','.join(str(i) for i in failing[:20]) if failing else 'suite-level'
-                      print('Sanitized failed suite:',area,'test-ordinals:',numbers)
+                      print('Sanitized failed suite:',area,'file-ordinal:',(inventory.index(name)+1) if name in inventory else 0,'test-ordinals:',numbers)
               print('Sanitized failed test count:',report.get('numFailedTests','unknown'))
           except (OSError,ValueError,TypeError,KeyError):
               print('Sanitized JSON report: unavailable')

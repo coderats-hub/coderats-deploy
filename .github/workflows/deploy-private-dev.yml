@@ -1,3 +1,4 @@
+# 2026-10-30: DEV web retries: add safe ordinal-only identification for outstanding private profile regression tests; source d79b63bd286008428fb8d2d10ea9739367a6e52d.
 # 2026-10-30: Third DEV web release attempt after targeted technical identity and profile test adjustments; source web-coderats-base@develop d79b63bd286008428fb8d2d10ea9739367a6e52d.
 # 2026-10-30: Retry authorized DEV web release after aligning gallery, technical identity and ratings regression tests; web-coderats-base@develop 8537890ecc27505b56f14e351e9d5186ecdd85d1.
 # 2026-10-30: Explicit DEV web release for permanent check-in gallery, responsive pagination and Orgs simplification; source web-coderats-base@develop 6915d7c07eb9b65f46d6ae490f05df5100f609b8.
@@ -289,6 +290,15 @@ jobs:
               'transform': r'Transform failed|Unexpected token|Parse failure',
           }
           print('Sanitized frontend failure kinds:', ','.join(k for k, v in signatures.items() if re.search(v, content)) or 'unclassified')
+# Ordinal-only diagnostics: identify stale profile tests without exposing private titles or assertions.
+profile_test = pathlib.Path('tests/profile.test.tsx')
+if profile_test.is_file():
+    titles = re.findall(r"^it\('([^']+)'", profile_test.read_text(errors='replace'), re.M)
+    failure_lines = [line for line in content.splitlines() if 'FAIL ' in line or '❯ ' in line]
+    positions = sorted({index for index, title in enumerate(titles, 1)
+                        if any(title in line for line in failure_lines)})
+    if positions:
+        print('Sanitized profile test ordinals:', ','.join(map(str, positions)))
           for label, pattern in [('chat_component', r'direct-messages\.tsx:(\d+):(\d+)'),
                                  ('dm_contract', r'contract\.ts:(\d+):(\d+)')]:
               match = re.search(pattern, content)

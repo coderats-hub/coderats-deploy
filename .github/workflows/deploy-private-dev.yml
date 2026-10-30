@@ -1,3 +1,4 @@
+# 2026-10-30: Retry DEV check-in mentions web after session-independent composer and legacy feed test fixes; develop bc21cb2b30de91f43bffe893c725341960de6e99.
 # 2026-10-30: Retry DEV check-in mentions API after test constructor correction; source develop 8c6948f4311599a84c3f2a19a4afd830fb7cfe6d.
 # 2026-10-29: DEV check-in user mentions web release; source web-coderats-base develop dc1903f3424625724b7a54c123653e22864f70ed.
 # 2026-10-29: DEV check-in user mentions API; source api-coderats-base develop e7767902637b760c018f639b29c8e6a5d0715d10.

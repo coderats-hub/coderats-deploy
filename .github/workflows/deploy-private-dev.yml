@@ -1,3 +1,4 @@
+# 2026-10-30: Requested DEV web release removing icon/count shadows in check-in grid; source web-coderats-base@develop 5b7093c4ef571bbea333aad1a624a14cda5403a6.
 # 2026-10-30: Retry DEV web after updating gallery theme-color assertions; web-coderats-base@develop 2ebf17abddbe6a7e9479a51e9933a4c809715b70.
 # 2026-10-30: Requested DEV web release for theme-aware translucent gallery metrics, preserving ratings badge; web-coderats-base@develop aa77bfb70b6eae47dcba65a76c860d83e3b27a9a.
 # 2026-10-30: Authorized DEV frontend release for dimmer profile check-in calendar borders; web-coderats-base@develop d8e67c95831735ea693f1953a62bd086964a1a1d.

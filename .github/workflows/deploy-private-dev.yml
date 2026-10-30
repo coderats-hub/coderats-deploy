@@ -1,3 +1,4 @@
+# 2026-10-30: Release corrected WebSocket precedence regression test; API develop 6724e6d52cc1bf23f355f995671ad3a4d745bd8c.
 # 2026-10-30: Compile-fix WebSocket priority via ServletWebSocketHandlerRegistry; API develop c0f605053d5f174510e1466639934c1a1944459b.
 # 2026-10-30: Release API WebSocket route precedence fix and regression test, develop 599d72adde9f3331fb74728c6360306d00f5ee44.
 # 2026-10-30: Release chat gateway upstream status classification web develop 318859b969c7bcf004f717a5f69ad8ca681d8436.

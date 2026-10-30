@@ -1,3 +1,4 @@
+# 2026-10-30: Release GET partial-react-evidence deletion fix and authorized member check-in image; api develop 618a1d52ba96c9f039a3ef301115744073da6581.
 # 2026-10-30: DEV frontend: center colony check-ins at maximum 1240px for wide layouts; web develop 94aa822622e89008af6bf238c4101b5627c04820.
 # 2026-10-30: Release theme-aware Orgs with banners, eligible colony selection and total-score ranking; web develop e513bd84196293c0438123bc952d39f0e4592b43.
 # 2026-10-30: Release tested organization total-score ranking, safe organization images and admin colony picker; api develop 94629e05890b6b9adbff842fe24e68efff35f05b.

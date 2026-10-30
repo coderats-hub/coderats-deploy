@@ -1,3 +1,4 @@
+# 2026-10-30: DEV web release retry after correcting lazy profile history assertion; web-coderats-base@develop d4a97252bd47b9be0b34f821307513dfdea13deb.
 # 2026-10-30: DEV web retries: add safe ordinal-only identification for outstanding private profile regression tests; source d79b63bd286008428fb8d2d10ea9739367a6e52d.
 # 2026-10-30: Third DEV web release attempt after targeted technical identity and profile test adjustments; source web-coderats-base@develop d79b63bd286008428fb8d2d10ea9739367a6e52d.
 # 2026-10-30: Retry authorized DEV web release after aligning gallery, technical identity and ratings regression tests; web-coderats-base@develop 8537890ecc27505b56f14e351e9d5186ecdd85d1.

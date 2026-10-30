@@ -1,3 +1,4 @@
+# 2026-10-29: Expand sanitized DEV frontend test-area diagnostics after Suspense rollout; source develop b661eea59b3c52203c165e1941218c41732e812a.
 # 2026-10-29: Retry DEV web after accessible Suspense skeleton and regression test; source web-coderats-base develop @ b661eea59b3c52203c165e1941218c41732e812a.
 # 2026-10-29: Requested DEV web deployment of card-level Suspense skeleton fix; source web-coderats-base develop @ 1ad05c4d98fb3667983a1f69db03368c94f46a96.
 # 2026-10-29: Explicit requested DEV frontend release from web-coderats-base develop @ 4529b44ff16e6073060c75cae93d00a0b654eccd; comment-only dispatch.
@@ -243,6 +244,16 @@ jobs:
               'dm-management.test.tsx': 'chat-management-ui',
               'direct-messages.test.tsx': 'chat-inbox-ui',
               'dm-colony-owner.test.tsx': 'chat-owner-ui',
+    'resource-suspense.test.tsx': 'card-suspense',
+    'streak.test.tsx': 'streak-card',
+    'profile.test.tsx': 'profile-ui',
+    'profile-cache.test.tsx': 'profile-cache',
+    'profile-preview.test.tsx': 'profile-preview',
+    'community-insights.test.tsx': 'colony-progress-card',
+    'get-technical-identity.test.tsx': 'technical-identity',
+    'get-themed-badges.test.tsx': 'achievement-cards',
+    'get-checkin-milestones.test.tsx': 'achievement-milestones',
+    'ratings-visualization.test.tsx': 'ratings-cards',
           }
           matched = set()
           for line in content.splitlines():

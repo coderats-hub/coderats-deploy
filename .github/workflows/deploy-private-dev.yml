@@ -1,3 +1,4 @@
+# 2026-10-30: Compile-fix WebSocket priority via ServletWebSocketHandlerRegistry; API develop c0f605053d5f174510e1466639934c1a1944459b.
 # 2026-10-30: Release API WebSocket route precedence fix and regression test, develop 599d72adde9f3331fb74728c6360306d00f5ee44.
 # 2026-10-30: Release chat gateway upstream status classification web develop 318859b969c7bcf004f717a5f69ad8ca681d8436.
 # 2026-10-30: Deploy first-party WebSocket upgrade gateway from web develop commit 90fb05a132e335c99cefb82170dd11310bdb7c77; validate gateway before publishing.

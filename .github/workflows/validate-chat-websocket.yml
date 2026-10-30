@@ -25,6 +25,9 @@ jobs:
         include:
           - service: web
             repository: web-coderats-base
+          - service: web-baseline
+            repository: web-coderats-base
+            ref: develop
           - service: api
             repository: api-coderats-base
     steps:
@@ -42,13 +45,13 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: coderats-hub/${{ matrix.repository }}
-          ref: feature/chat-websocket-realtime-20261029
+          ref: ${{ matrix.ref || 'feature/chat-websocket-realtime-20261029' }}
           token: ${{ steps.token.outputs.token }}
           persist-credentials: false
           path: source
 
       - name: Prepare Node
-        if: matrix.service == 'web'
+        if: matrix.service != 'api'
         uses: actions/setup-node@v4
         with:
           node-version: '24'
@@ -61,7 +64,7 @@ jobs:
           java-version: '21'
 
       - name: Verify frontend tests, TypeScript and production build independently
-        if: matrix.service == 'web'
+        if: matrix.service != 'api'
         working-directory: source
         env:
           NEXT_PUBLIC_API_URL: https://coderats.club

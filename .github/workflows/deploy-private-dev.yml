@@ -1,3 +1,4 @@
+# 2026-10-30: Requested DEV web release to reduce gallery check-in image opacity by 12 percentage points (83% to 71%); source web-coderats-base@develop 031f16a2439f3beb2e98eed50394541638577a1a.
 # 2026-10-30: Authorized DEV web release for theme-specific check-in gallery metrics (classic lilac-grey, Dracula, light, V2); web-coderats-base@develop 39669655ee9fbd4d00ed7d8b85c9caf0523b0220.
 # 2026-10-30: Authorized DEV web release for background-matched check-in metrics and restored red liked heart; web-coderats-base@develop 0b165fa766220237d441fa9566824a31691d0a47.
 # 2026-10-30: Requested DEV web release removing icon/count shadows in check-in grid; source web-coderats-base@develop 5b7093c4ef571bbea333aad1a624a14cda5403a6.

@@ -1,3 +1,4 @@
+# 2026-10-30: Explicit DEV web release for permanent check-in gallery, responsive pagination and Orgs simplification; source web-coderats-base@develop 6915d7c07eb9b65f46d6ae490f05df5100f609b8.
 # 2026-10-30: Final GET fix: count only live verified React evidence keys after partial check-in deletion; api develop 45066db05bdd73f9fd2179c7699d5dc5f07a6470.
 # 2026-10-30: Release optional nine-checkin grid for colonies and profiles with score and RATINGS overlay; web develop 5cd2f7e94ba9cac6f4b3a824d0685e3d436492a5; CI 41068321177.
 # 2026-10-30: Release check-in beta grid for colonies and profiles, 9 per page, and traditional scroll viewer; web develop 5cd2f7e94ba9cac6f4b3a824d0685e3d436492a5.

@@ -1,3 +1,4 @@
+# 2026-10-30: Safe JSON test diagnostics for failed DEV frontend release; bounded categories/ordinals, no private assertions.
 # 2026-10-30: DEV web release retry after correcting lazy profile history assertion; web-coderats-base@develop d4a97252bd47b9be0b34f821307513dfdea13deb.
 # 2026-10-30: DEV web retries: add safe ordinal-only identification for outstanding private profile regression tests; source d79b63bd286008428fb8d2d10ea9739367a6e52d.
 # 2026-10-30: Third DEV web release attempt after targeted technical identity and profile test adjustments; source web-coderats-base@develop d79b63bd286008428fb8d2d10ea9739367a6e52d.
@@ -248,7 +249,7 @@ jobs:
             echo "::error::Private web validation failed: dependency installation."
             exit 1
           fi
-          if ! npm test >"$runlog" 2>&1; then
+          if ! npm test -- --reporter=json --outputFile="$RUNNER_TEMP/coderats-test-report.json" >"$runlog" 2>&1; then
             echo "::error::Private web validation failed: unit tests."
             # Only broad, predetermined component areas may leave the private runner.
             # Never echo private source, test titles, assertions, paths or raw logs.
@@ -291,6 +292,35 @@ jobs:
               'transform': r'Transform failed|Unexpected token|Parse failure',
           }
           print('Sanitized frontend failure kinds:', ','.join(k for k, v in signatures.items() if re.search(v, content)) or 'unclassified')
+          # Only safe, allowlisted test file categories and failure indices; no assertion text.
+          import json
+          try:
+              report=json.loads(pathlib.Path('/tmp/nonexistent-report').read_text()) if False else json.loads(pathlib.Path(__import__('os').environ['RUNNER_TEMP'], 'coderats-test-report.json').read_text())
+              allow = {
+                  'profile.test.tsx': 'profile-ui',
+                  'get-technical-identity.test.tsx': 'technical-identity',
+                  'ratings-visualization.test.tsx': 'ratings-cards',
+                  'profile-preview.test.tsx': 'profile-preview',
+                  'checkin-feed-view.test.tsx': 'checkin-view',
+                  'check-in-visualization-beta.test.tsx': 'checkin-presentation',
+                  'organizations-ui.test.tsx': 'organizations',
+                  'colony-detail.test.tsx': 'colony-detail',
+                  'feed.test.tsx': 'community-feed',
+                  'get-themed-badges.test.tsx': 'achievement-cards',
+                  'profile-cache.test.tsx': 'profile-cache',
+                  'accessibility.test.tsx': 'accessibility',
+              }
+              for suite in report.get('testResults',[]):
+                  failing = [i+1 for i,t in enumerate(suite.get('assertionResults',[])) if t.get('status') == 'failed']
+                  if failing or suite.get('status')=='failed':
+                      name=pathlib.Path(suite.get('name','')).name
+                      area=allow.get(name,'other-test')
+                      numbers=','.join(str(i) for i in failing[:20]) if failing else 'suite-level'
+                      print('Sanitized failed suite:',area,'test-ordinals:',numbers)
+              print('Sanitized failed test count:',report.get('numFailedTests','unknown'))
+          except (OSError,ValueError,TypeError,KeyError):
+              print('Sanitized JSON report: unavailable')
+
           # Ordinal-only diagnostics: identify stale profile tests without exposing private titles or assertions.
           profile_test = pathlib.Path('tests/profile.test.tsx')
           if profile_test.is_file():

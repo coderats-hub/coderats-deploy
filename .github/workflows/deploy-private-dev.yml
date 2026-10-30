@@ -1,3 +1,4 @@
+# 2026-10-30: Release tested optimistic chat outbox and visible typing UI web develop 131954f17a1c7a8e6f467d1802c4201654e02b9f.
 # 2026-10-30: Release tested WebSocket typing-stop throttle fix api develop 282c5b1c84d8b1ff7655ad73597fb62985c8a1ee.
 # 2026-10-29: CodeRats WebSocket chat: publish merged frontend develop with typing dots and live sync.
 # 2026-10-29: CodeRats chat WebSocket: deploy merged API develop for realtime and typing events.

@@ -1,5 +1,5 @@
 name: Validate chat WebSocket feature branches (no deploy)
-# Verify JSX delimiter fix in chat UI, commit 9d03e08.
+# Verify optimistic outbox, message retries and typing signals without publishing private sources.
 
 on:
   push:
@@ -26,8 +26,10 @@ jobs:
         include:
           - service: web
             repository: web-coderats-base
+            ref: fix/chat-optimistic-outbox-typing-20261030
           - service: api
             repository: api-coderats-base
+            ref: fix/chat-typing-throttle-20261030
     steps:
       - name: Obtain private-source read-only token
         id: token

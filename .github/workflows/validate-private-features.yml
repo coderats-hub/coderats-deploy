@@ -154,7 +154,7 @@ jobs:
                   if not re.fullmatch(r'[A-Za-z0-9_.-]+', name): continue
                   if not re.fullmatch(r'[A-Za-z0-9_.$]+', kind): kind='unknown'
                   trace = problem.text or ''
-                  line = re.search(r'GetWorkerEvidencePipelinePostgresTest\\.java:(\\d+)', trace)
+                  line = re.search(r'GetWorkerEvidencePipelinePostgresTest\.java:(\d+)', trace)
                   print('GET_TEST_FAILURE:', name, kind, line.group(1) if line else '-')
           PY
             exit 1

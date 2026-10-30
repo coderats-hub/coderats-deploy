@@ -1,0 +1,74 @@
+name: Diagnose Azure chat WebSocket HTTP status (aggregated)
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/diagnose-chat-azure.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  status:
+    if: >-
+      github.repository == 'coderats-hub/coderats-deploy' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' ||
+       startsWith(github.event.head_commit.message, 'ci(chat): inspect azure websocket status'))
+    runs-on: ubuntu-latest
+    environment: dev
+    timeout-minutes: 8
+    steps:
+      - name: Login with scoped DEV Azure OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Summarize endpoint response codes without request headers or user data
+        shell: bash
+        run: |
+          set -euo pipefail
+          rg=rg-coderats-base-dev
+          workspace="$(az monitor log-analytics workspace list -g "$rg" --query '[0].customerId' -o tsv)"
+          if [[ -z "$workspace" || "$workspace" == "None" ]]; then
+            echo "Azure Log Analytics workspace unavailable"
+            exit 0
+          fi
+          for source in app-requests container-http-cl container-http; do
+            case "$source" in
+              app-requests)
+                query='AppRequests | where TimeGenerated > ago(3h) | where tostring(Url) has "/api/v1/dms/ws" | summarize total=count() by status=tostring(ResultCode)'
+                ;;
+              container-http-cl)
+                query='ContainerAppHTTPLogs_CL | where TimeGenerated > ago(3h) | where tostring(column_ifexists("RequestUri_s","")) has "/api/v1/dms/ws" or tostring(column_ifexists("Path_s","")) has "/api/v1/dms/ws" | summarize total=count() by status=tostring(column_ifexists("StatusCode_d",column_ifexists("StatusCode_s","")))'
+                ;;
+              container-http)
+                query='ContainerAppHTTPLogs | where TimeGenerated > ago(3h) | where tostring(column_ifexists("Path","")) has "/api/v1/dms/ws" | summarize total=count() by status=tostring(column_ifexists("StatusCode",0))'
+                ;;
+            esac
+            if az monitor log-analytics query --workspace "$workspace" --analytics-query "$query" -o json > "$RUNNER_TEMP/coderats-chat-status.json" 2>/dev/null; then
+              SOURCE="$source" python3 - <<'PY'
+          import json, os, pathlib, re
+          data=json.loads(pathlib.Path(os.environ['RUNNER_TEMP'],'coderats-chat-status.json').read_text())
+          if isinstance(data,dict) and 'tables' in data:
+              tab=(data.get('tables') or [{}])[0]
+              fields=[col.get('name') for col in tab.get('columns',[])]
+              rows=[dict(zip(fields,row)) for row in tab.get('rows',[])]
+          else:
+              rows=data if isinstance(data,list) else []
+          print('Aggregated endpoint status source:', os.environ['SOURCE'])
+          found=False
+          for row in rows[:20]:
+              code=str(row.get('status',''))
+              count=row.get('total',0)
+              if re.fullmatch(r'[1-5][0-9][0-9]',code) and isinstance(count,(int,float)):
+                  print('status',code,'count',int(count));found=True
+          if not found: print('no matching records')
+          PY
+            else
+              echo "$source: diagnostic table not available (no request details emitted)"
+            fi
+          done
+      - name: Logout
+        if: always()
+        run: az logout --output none || true

@@ -1,0 +1,50 @@
+name: Diagnose deployed chat revision alignment
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/diagnose-chat-revisions.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  inspect:
+    if: github.repository == 'coderats-hub/coderats-deploy' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: dev
+    timeout-minutes: 8
+    steps:
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Verify deployed application revisions, image git commit, and WS route
+        shell: bash
+        run: |
+          set -euo pipefail
+          for app in ca-coderats-base-api-dev ca-coderats-base-web-dev; do
+            if ! az containerapp show -g rg-coderats-base-dev -n "$app" -o json > "$RUNNER_TEMP/chat-app.json" 2>/dev/null; then
+              echo "$app: not found or permission denied"
+              continue
+            fi
+            APP_NAME="$app" python3 - <<'PY'
+          import json, os, pathlib, re
+          data=json.loads((pathlib.Path(os.environ['RUNNER_TEMP'])/'chat-app.json').read_text())
+          p=data.get('properties') or {}
+          template=p.get('template') or {}
+          containers=template.get('containers') or []
+          image=str((containers[0] if containers else {}).get('image') or '')
+          sha=re.search(r':([0-9a-f]{40})-[0-9]+$', image)
+          ingress=(p.get('configuration') or {}).get('ingress') or {}
+          print(os.environ['APP_NAME'] + ':')
+          print('  deployed source SHA: '+ (sha.group(1) if sha else 'not recognizable'))
+          print('  latest revision ready: '+str(p.get('latestRevisionName')==p.get('latestReadyRevisionName')))
+          print('  ingress transport: '+str(ingress.get('transport')))
+          print('  target port: '+str(ingress.get('targetPort')))
+          print('  active replicas: '+str((template.get('scale') or {}).get('minReplicas'))+'-'+str((template.get('scale') or {}).get('maxReplicas')))
+          PY
+          done
+      - name: Logout
+        if: always()
+        run: az logout --output none || true

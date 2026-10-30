@@ -1,3 +1,4 @@
+# 2026-10-30: Requested DEV web release of feed like/Grader indicators, RATINGS overlay, and aligned profile colony selector; web develop a6f26f8269374c0751cc63c65139b777d6805b37.
 # 2026-10-30: Deploy API grader snapshot filter for image-only check-ins; api develop 6d1ac44ac215952d59a90e78169d610483d1d5a7.
 # 2026-10-30: Publish DEV web after fixing TS2769 from unsupported exact option in Organizations role query; web develop 49db5b9b34c6370d13f8cffca01753cadee60eae.
 # 2026-10-30: Sanitized TS compiler source location ordinal and line to fix release TS2769 without publishing private logs.

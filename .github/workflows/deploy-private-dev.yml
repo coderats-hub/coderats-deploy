@@ -1,3 +1,4 @@
+# 2026-10-30: Release optional nine-checkin grid for colonies and profiles with score and RATINGS overlay; web develop 5cd2f7e94ba9cac6f4b3a824d0685e3d436492a5; CI 41068321177.
 # 2026-10-30: Release check-in beta grid for colonies and profiles, 9 per page, and traditional scroll viewer; web develop 5cd2f7e94ba9cac6f4b3a824d0685e3d436492a5.
 # 2026-10-30: Release GET partial-react-evidence deletion fix and authorized member check-in image; api develop 618a1d52ba96c9f039a3ef301115744073da6581.
 # 2026-10-30: DEV frontend: center colony check-ins at maximum 1240px for wide layouts; web develop 94aa822622e89008af6bf238c4101b5627c04820.

@@ -161,9 +161,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: "coderats-central-dev-${{ github.event_name == 'push' && (github.event.head_commit.message == 'ci(dev): release bootstrap calendar api' ||
-          github.event.head_commit.message == 'ci(dev): release bootstrap calendar web' ||
-          github.event.head_commit.message == 'ci(dev): release admin dashboard api' || github.event.head_commit.message == 'ci(dev): release bootstrap calendar api') && 'api' || github.event.head_commit.message == 'ci(dev): release colony chat owner api' && 'api' || github.event_name == 'push' && (github.event.head_commit.message == 'ci(dev): release admin dashboard web' || github.event.head_commit.message == 'ci(dev): release bootstrap calendar web') && 'web' || github.event.head_commit.message == 'ci(dev): release colony chat owner web' && 'web' || github.event_name == 'push' && github.event.head_commit.message == 'ci(dev): publish proficiency badges web' && 'web' || github.event_name == 'push' && github.event.head_commit.message == 'ci(dev): publish beta4 api' && 'api' || (github.event_name == 'push' || github.event_name == 'schedule') && 'get-worker' || inputs.service }}"
+  group: "coderats-central-dev-${{ github.event_name == 'push' && (github.event.head_commit.message == 'ci(dev): release admin dashboard api' || github.event.head_commit.message == 'ci(dev): release bootstrap calendar api') && 'api' || github.event.head_commit.message == 'ci(dev): release colony chat owner api' && 'api' || github.event_name == 'push' && (github.event.head_commit.message == 'ci(dev): release admin dashboard web' || github.event.head_commit.message == 'ci(dev): release bootstrap calendar web') && 'web' || github.event.head_commit.message == 'ci(dev): release colony chat owner web' && 'web' || github.event_name == 'push' && github.event.head_commit.message == 'ci(dev): publish proficiency badges web' && 'web' || github.event_name == 'push' && github.event.head_commit.message == 'ci(dev): publish beta4 api' && 'api' || (github.event_name == 'push' || github.event_name == 'schedule') && 'get-worker' || inputs.service }}"
   cancel-in-progress: false
 
 jobs:
@@ -176,6 +174,8 @@ jobs:
        github.event_name == 'schedule' ||
        (github.event_name == 'push' &&
         (github.event.head_commit.message == 'ci(dev): release admin dashboard api' ||
+         github.event.head_commit.message == 'ci(dev): release bootstrap calendar api' ||
+         github.event.head_commit.message == 'ci(dev): release bootstrap calendar web' ||
          github.event.head_commit.message == 'ci(dev): release admin dashboard web' ||
          github.event.head_commit.message == 'ci(dev): release colony chat owner api' ||
          github.event.head_commit.message == 'ci(dev): release colony chat owner web' ||

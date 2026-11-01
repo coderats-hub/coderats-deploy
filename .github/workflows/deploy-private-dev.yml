@@ -1,3 +1,4 @@
+# 2026-11-01: Authorized viewed-member colony overview release; API PR #201, develop b315483d55998f939df4c6d014991238813bb516.
 # 2026-11-01: Authorized frontend DEV bootstrap/calendar release (web PR #104, develop 367025708ecf9dc15c370d6386a74b358589af7f).
 # 2026-11-01: Approved bootstrap/calendar optimization DEV API release (api PR #200, develop 172472675edbc5ac23b6d0f1556ac07d75f5726f).
 # 2026-10-31: Retry DEV web release after correcting profile aggregate streak reuse and auth-bound shared streak test; source web-coderats-base@develop 8bd0d2aff8decca3ec32c03118fee395575e4bd0.

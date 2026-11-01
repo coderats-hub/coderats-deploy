@@ -1,3 +1,4 @@
+# 2026-11-01: Approved bootstrap/calendar optimization DEV API release (api PR #200, develop 172472675edbc5ac23b6d0f1556ac07d75f5726f).
 # 2026-10-31: Retry DEV web release after correcting profile aggregate streak reuse and auth-bound shared streak test; source web-coderats-base@develop 8bd0d2aff8decca3ec32c03118fee395575e4bd0.
 # 2026-10-31: Requested DEV web release of unread-count deduplication and UTC streak cache; web-coderats-base@develop (latest).
 # 2026-10-31: Explicit DEV web release with aligned profile overview column widths (ratings/technical identity, calendar/achievements); web-coderats-base@develop 38f9ca51d0e8c4a535e2876d24580f07799e74d7.

@@ -1,3 +1,4 @@
+# 2026-11-03: Authorized DEV web release of accurate mutual-colony profile count and public-only labels; web-coderats-base@develop 3b72d3e6019fbc122f7f5fb3084eee336d8dbb30.
 # 2026-11-03: Authorized DEV API release of accurate shared-colony membership flag; api-coderats-base@develop 0be6a18318f14e453ebe7802712b96151621e4f9.
 # 2026-11-03: Authorized DEV web release of voluntary colony exit dialog, awaiting compatible backend /leave endpoint; web-coderats-base@develop 9d13c4681a2b48c9185074507e59c5485a62838f.
 # 2026-11-03: Authorized DEV API release of voluntary colony exit (DELETE /colonies/{id}/leave), including preserved check-ins and historical standings; api-coderats-base@develop 87c5370b2df2d6f3b8a55b52da2713f570c00690.

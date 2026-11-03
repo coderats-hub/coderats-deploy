@@ -1,3 +1,4 @@
+# 2026-11-03: Authorized DEV web deployment for nonblocking colony invitation acceptance; web-coderats-base@develop ecdfdf3ddba63e0c16e9ec2783459d4cca6cec36.
 # 2026-11-02: Authorized DEV API deploy of GitHub OAuth success redirect to /login -> /app. API source develop includes 923b547894fdfba26233afe3aa310c70b6c4f8c9; web destination test dea768d98bd5576f114b47ba4afcbdc98c8eef8a.
 # 2026-11-01: Authorized DEV API release for colony ranking membership and public-comment metrics fixes; api-coderats-base@develop 900e2f5a6798215b94f553505adf132f0ff58d62.
 # 2026-11-01: Authorized DEV web release for profile check-in modal/calendar fixes; web-coderats-base@develop 7be1d5a25123c987e1a6c740dcbf6ccf37c320be.

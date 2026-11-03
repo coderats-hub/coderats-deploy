@@ -1,3 +1,4 @@
+# 2026-11-03: Authorized DEV API release after merging PRs #203 and #205 (security/performance and follows_me reverse relation); api-coderats-base develop 25134336fc107fae2aa89ba2c20e42e2bcd0deab.
 # 2026-11-03: Authorized DEV API release of GitHub signup null-display-name fallback (api-coderats-base develop d599e3f78c29c1dcd9d73ca5b8e35db830fadcd9, PR #204; CI green).
 # 2026-11-03: Authorized DEV web release of accurate mutual-colony profile count and public-only labels; web-coderats-base@develop 3b72d3e6019fbc122f7f5fb3084eee336d8dbb30.
 # 2026-11-03: Authorized DEV API release of accurate shared-colony membership flag; api-coderats-base@develop 0be6a18318f14e453ebe7802712b96151621e4f9.

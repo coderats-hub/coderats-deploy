@@ -1,3 +1,4 @@
+# 2026-11-03: Authorized DEV API deployment for private-profile follow requests (PR #206 merged to develop at 530ebf1a112823d3f414ecfef913f7b5b6dc9b81); server-side approval, privacy and notification schema V60.
 # 2026-11-03: Authorized DEV web release after merging PRs #111, #112 and #113 (notifications, profile, colony links, follow-back, ranking card surfaces); web-coderats-base develop 8ea042c9b90522b8ba18eff86c4269405b329565.
 # 2026-11-03: Authorized DEV API release after merging PRs #203 and #205 (security/performance and follows_me reverse relation); api-coderats-base develop 25134336fc107fae2aa89ba2c20e42e2bcd0deab.
 # 2026-11-03: Authorized DEV API release of GitHub signup null-display-name fallback (api-coderats-base develop d599e3f78c29c1dcd9d73ca5b8e35db830fadcd9, PR #204; CI green).

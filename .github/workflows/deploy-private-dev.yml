@@ -1,3 +1,4 @@
+# 2026-11-03: Authorized DEV web release of the new Coderats default profile WebP banner; web-coderats-base@develop 3050a0dc917e5feb3f51a4b19eed35adf34444b5.
 # 2026-11-03: Authorized DEV frontend release: privacy PR #119 (fbc082a5a4cc834511966d24c910d5b24300c9d7) and quality tooltip PR #114 (23eed435c582b915eb2dc84bf721684bd1a0039a) merged to develop.
 # 2026-11-03: Authorized DEV API release of profile privacy rework, PR #207 merged into develop (069c785642b0deed5bf242309029cb3ef3f60afb).
 # 2026-11-03: Authorized DEV frontend deployment for private-profile follow requests (PR #115 merged to develop at 0b513817a2cbdf6dec9308cc5d5631dec5227ccd); request/cancel, owner inbox, accept/decline notifications.

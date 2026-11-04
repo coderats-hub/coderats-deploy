@@ -1,3 +1,4 @@
+# 2026-11-04: Authorized DEV web release for GitHub check-in beta title/status alignment, compact 4px rhythm and fixed top-right ratings; web-coderats-base@develop includes bc4dc07c7dc1cc7e8116753e318c274fce0bc583.
 # 2026-11-04: Authorized DEV web release for GitHub-checkin beta: original title alignment, borderless action icons, image above AI summary; source web-coderats-base@develop includes 9f2460a0017e3017582022e92c3734ca45b789da.
 # 2026-11-04: Authorized DEV web validation and release for GitHub-style beta check-in revisions: RATINGS top-right, author check-in title, Markdown Grader synthesis and expandable highlights/attention; web-coderats-base@develop includes 524b2a4eaba6890735e52799bbc37a92bab885d2.
 # 2026-11-04: Retest DEV web after fixing two failing unit tests (profile settings beta control, GitHub summary text); source web-coderats-base@develop includes b95468607e8d97a8f8d75100ed22b91f682b0751.

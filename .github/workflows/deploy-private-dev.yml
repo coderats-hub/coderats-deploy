@@ -1,3 +1,4 @@
+# 2026-11-03: Authorized DEV API release for per-widget window geometry and edge resizing; api-coderats-base@develop f4446029e69d879bbf0e5e3d68c2a18affc743f9 (PR #210).
 # 2026-11-03: Authorized DEV web release for fixed expanded 8-widget profile formats, responsive grid and top-focused banner; web-coderats-base@develop 9daf41e7fe7cee561f63985e39148e18797363c2 (PR #122).
 # 2026-11-03: Authorized DEV API v2 widget formats and legacy layout migration, api-coderats-base@develop 2c73388903b1349c6e017103c1b3177af34b49c2 (PR #209).
 # 2026-11-03: Authorized DEV frontend release for customizable expanded member profiles; web-coderats-base@develop 4d418de2c8fed1d770fd1c9193c42ad5ca690c68 (PR #121); compatible API already healthy.

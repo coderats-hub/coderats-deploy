@@ -1,3 +1,4 @@
+# 2026-11-04: Authorized DEV web deployment for SEO favicon and WebSite name; web-coderats-base@develop 7321ba21078d3b3fffc5dfbe025f167ea783db43 (PR #125); auth noindex already configured.
 # 2026-11-03: Authorized DEV frontend release for border/corner widget resizing; web-coderats-base@develop 93933471e5067e9c8aeceda0fc947e1b5739c198 (PR #124), paired with API PR #210.
 # 2026-11-03: Trigger authorized API DEV deploy with the exact centralized release selector; profile edge resizing backend from PR #210.
 # 2026-11-03: Authorized DEV API release for per-widget window geometry and edge resizing; api-coderats-base@develop f4446029e69d879bbf0e5e3d68c2a18affc743f9 (PR #210).

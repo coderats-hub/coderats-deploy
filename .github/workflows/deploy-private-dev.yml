@@ -1,3 +1,4 @@
+# 2026-11-04: Authorized DEV API deployment for balanced profile widget defaults (quality/achievements 184px, ratings/calendar 392px), source api-coderats-base@develop includes ae79d36f18cd012ed9375d4151c194350b1cda3c.
 # 2026-11-04: DEV frontend release fixes profile layout save by sending snake_case JSON and accepting both snake_case/camelCase API geometry responses; web-coderats-base@develop includes 128a1d9856fffd82db58f9d3cac142bb44ca41bd and 88f25f45d00d2370f867aa2b8ea40545d2c3c2df.
 # 2026-11-04: DEV API release fixes layout JSON naming mismatch (camelCase fields with snake_case aliases) and regression tests for saved profile dimensions; api-coderats-base@develop includes 7dea956ebef2aef9c6b4a8b513ff7671ba97c9f2.
 # 2026-11-04: Release updated DEV web widget resizer with width adjustments retained in stacked tablet layouts; web-coderats-base@develop includes 22fe2b587595364710934fdffef7d49edee9b295.

@@ -1,3 +1,4 @@
+# 2026-11-04: Release updated DEV web widget resizer with width adjustments retained in stacked tablet layouts; web-coderats-base@develop includes 22fe2b587595364710934fdffef7d49edee9b295.
 # 2026-11-04: Authorized DEV web deploy for saved flexible profile-widget widths, adjustable column divider and explicit layout errors; web-coderats-base@develop includes a49a8452fda80b0abee46591c9d7af3174f6e807.
 # 2026-11-04: Authorized DEV API deploy for widget-layout save compatibility, 25% widget width and primary column split; api-coderats-base@develop includes 5f4637f3a97c24f6d717b9e891375c645b1f58f1.
 # 2026-11-04: Authorized DEV web release fixing RATINGS alignment and compact-height window resizing; web-coderats-base@develop includes a8e66f65ca49b73afa2f66e6cbe9e145aa8f6204.

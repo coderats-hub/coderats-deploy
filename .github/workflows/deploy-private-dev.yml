@@ -1,3 +1,4 @@
+# 2026-11-05: Authorized DEV frontend release of PR #130 (optimistic check-in card, no publishing indicator, evaluation pending, instant feed and safe server reconciliation), web-coderats-base@develop bc440de63709b39b725d1720846be77f5fc29924.
 # 2026-11-05: Authorized DEV frontend release for PR #129: replace black check-in image letterboxing with themed card surface (standard and GitHub beta), web-coderats-base@develop 2077f09283898025a05cb13b27da68af02008bf6.
 # 2026-11-05: Authorized DEV frontend release: remove dark media letterboxing in both standard and GitHub-beta check-ins; web-coderats-base@develop 2077f09283898025a05cb13b27da68af02008bf6 (PR #129).
 # 2026-11-05: Authorized DEV frontend release: check-in beta header links colony name instead of GitHub repository; merged web-coderats-base@develop 9a2a78cf9f704ceaa68fd71b3241b85ebb0c8810 (PR #128).

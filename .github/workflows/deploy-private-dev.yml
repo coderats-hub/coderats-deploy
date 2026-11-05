@@ -1,3 +1,4 @@
+# 2026-11-04: Authorized DEV API deployment for check-in mention ON CONFLICT repair and commit branch metadata; api-coderats-base@develop includes 80ca76e940cf255b9145578561008a079e897cc0.
 # 2026-11-04: Authorized DEV web check-in all-branches / rolling 24h release; web-coderats-base@develop dd62f1e31f7414285b95b493e13f57482b86cceb.
 # 2026-11-04: Authorized DEV API check-in all-branches / rolling 24h release; api-coderats-base@develop c1808df623ddeb8450a5679dd08503de5776a676.
 # 2026-11-04: DEV web fix for GitHub-style check-in header alignment: explicit title/status grid with separate right-side RATINGS; web-coderats-base@develop includes ab1fb1aad33547851b3585a84d3a99d935ff2ece.

@@ -1,0 +1,313 @@
+name: Validate private CodeRats source SHA (central CI)
+on:
+  workflow_dispatch:
+    inputs:
+      service:
+        description: Exact CodeRats service to validate
+        required: true
+        type: choice
+        options: [web, api, grader, infra, skills, rag, workspace, education, enterprise, templates]
+      source_sha:
+        description: Immutable commit from the owning private repository
+        required: true
+        type: string
+      trigger:
+        description: Trusted source event type
+        required: true
+        type: choice
+        options: [develop, main, pr]
+      pr_number:
+        description: PR number (required for trigger=pr)
+        required: false
+        default: "0"
+        type: string
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: coderats-private-ci-${{ inputs.service }}-${{ inputs.source_sha }}
+  cancel-in-progress: false
+
+jobs:
+  authorize:
+    name: Verify trusted private source
+    if: github.repository == 'coderats-hub/coderats-deploy' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: ci
+    outputs:
+      repository: ${{ steps.resolve.outputs.repository }}
+    steps:
+      - name: Validate explicit inputs
+        id: resolve
+        env:
+          SERVICE: ${{ inputs.service }}
+          PIN: ${{ inputs.source_sha }}
+          TRIGGER: ${{ inputs.trigger }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+        run: |
+          set -euo pipefail
+          [[ "$PIN" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Invalid SHA"; exit 1; }
+          case "$SERVICE" in
+            web) repository=web-coderats-base ;;
+            api) repository=api-coderats-base ;;
+            grader) repository=api-grader-coderats ;;
+            infra) repository=coderats-base-infra ;;
+            skills) repository=coderats-skills ;;
+            rag) repository=coderats-rag ;;
+            workspace) repository=coderats-workspace ;;
+            education) repository=web-coderats-education ;;
+            enterprise) repository=web-coderats-enterprise ;;
+            templates) repository=cicd-templates ;;
+            *) exit 1 ;;
+          esac
+          case "$TRIGGER" in
+            main|develop) [[ "$PR_NUMBER" == "0" || -z "$PR_NUMBER" ]] || exit 1 ;;
+            pr) [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]] || exit 1 ;;
+            *) exit 1 ;;
+          esac
+          echo "repository=$repository" >> "$GITHUB_OUTPUT"
+      - name: Mint source read-only token
+        uses: actions/create-github-app-token@v2
+        id: read
+        with:
+          app-id: ${{ vars.CODERATS_CI_APP_ID }}
+          private-key: ${{ secrets.CODERATS_CI_APP_PRIVATE_KEY }}
+          owner: coderats-hub
+          repositories: ${{ steps.resolve.outputs.repository }}
+          permission-contents: read
+          permission-pull-requests: read
+      - name: Validate exact source commit is reachable from its claimed event
+        env:
+          GH_TOKEN: ${{ steps.read.outputs.token }}
+          PRIVATE_REPO: coderats-hub/${{ steps.resolve.outputs.repository }}
+          PIN: ${{ inputs.source_sha }}
+          TRIGGER: ${{ inputs.trigger }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+        run: |
+          set -euo pipefail
+          if [[ "$TRIGGER" == "pr" ]]; then
+            gh api "repos/$PRIVATE_REPO/pulls/$PR_NUMBER" | jq -e \
+              --arg pin "$PIN" --arg repo "$PRIVATE_REPO" \
+              '.state == "open" and .head.sha == $pin and
+               .head.repo.full_name == $repo and
+               (.base.ref == "develop" or .base.ref == "main")' >/dev/null || {
+                echo "::error::PR head is not the expected trusted internal SHA"; exit 1;
+              }
+          else
+            tip="$(gh api "repos/$PRIVATE_REPO/branches/$TRIGGER" --jq '.commit.sha')"
+            [[ "$tip" =~ ^[0-9a-f]{40}$ ]] || exit 1
+            if [[ "$tip" != "$PIN" ]]; then
+              # Validate earlier commits in this branch only when they remain
+              # ancestors; no arbitrary source refs or untrusted fork SHAs.
+              status="$(gh api "repos/$PRIVATE_REPO/compare/$PIN...$tip" --jq '.status')"
+              [[ "$status" == "ahead" ]] || {
+                echo "::error::SHA is not an ancestor of the requested source branch"; exit 1;
+              }
+            fi
+          fi
+          echo "Private commit accepted for CI; source contents not printed."
+
+  test:
+    name: Test private source safely
+    needs: authorize
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: ci
+    permissions:
+      contents: read
+    steps:
+      - name: Obtain one-repo read-only checkout token
+        uses: actions/create-github-app-token@v2
+        id: token
+        with:
+          app-id: ${{ vars.CODERATS_CI_APP_ID }}
+          private-key: ${{ secrets.CODERATS_CI_APP_PRIVATE_KEY }}
+          owner: coderats-hub
+          repositories: ${{ needs.authorize.outputs.repository }}
+          permission-contents: read
+      - name: Checkout exact private source commit
+        uses: actions/checkout@v4
+        with:
+          repository: coderats-hub/${{ needs.authorize.outputs.repository }}
+          ref: ${{ inputs.source_sha }}
+          token: ${{ steps.token.outputs.token }}
+          persist-credentials: false
+          path: app-src
+      - name: Node 24
+        if: inputs.service == 'web' || inputs.service == 'education' || inputs.service == 'enterprise'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Java 21
+        if: inputs.service == 'api'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Python 3.12
+        if: inputs.service == 'grader' || inputs.service == 'skills' || inputs.service == 'rag'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Setup Terraform CLI for offline infrastructure checks
+        if: inputs.service == 'infra'
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.16.0'
+      - name: Execute private tests and build without publishing source logs
+        working-directory: app-src
+        env:
+          SERVICE: ${{ inputs.service }}
+          NEXT_PUBLIC_API_URL: https://coderats.club
+        run: |
+          set -euo pipefail
+          log="$RUNNER_TEMP/coderats-private-ci.log"
+          case "$SERVICE" in
+            web)
+              command='npm ci --no-audit --no-fund && npm test && npm run test:ws && npx tsc --noEmit && npm run build -- --webpack'
+              ;;
+            api)
+              command='chmod +x ./mvnw && ./mvnw --batch-mode verify'
+              ;;
+            grader)
+              command='python -m pip install --disable-pip-version-check -r requirements.txt && python -m compileall -q web autograder sandbox_manager && python -m pytest -q tests/unit'
+              ;;
+            infra)
+              # Never run terraform plan/apply or Azure OIDC from source CI.
+              command='terraform fmt -check -recursive terraform && bash -n .github/scripts/recover-dev-secrets.sh'
+              ;;
+            skills)
+              command='python3 scripts/validate_skills.py . && python3 -m unittest discover -s tests -v'
+              ;;
+            rag)
+              command='python3 scripts/validate.py && python3 -m unittest discover -s tests -v && python3 scripts/build_index.py --output /tmp/coderats-rag-ci-chunks.jsonl'
+              ;;
+            workspace)
+              command='test -s AGENTS.md && test -s README.md && test -s repos.txt && bash -n scripts/bootstrap.sh'
+              ;;
+            education|enterprise)
+              command='npm ci --no-audit --no-fund && npx tsc --noEmit && npm run build'
+              ;;
+            templates)
+              command='docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.12 -no-color && docker run --rm -v "$PWD:/mnt" -w /mnt koalaman/shellcheck-alpine:v0.11.0 shellcheck $(find templates -type f -name "*.sh" | sort)'
+              ;;
+            *) exit 1 ;;
+          esac
+          if ! bash -ec "$command" > "$log" 2>&1; then
+            echo "::error::Private $SERVICE CI failed; details suppressed in public logs."
+            exit 1
+          fi
+          echo "Private $SERVICE checks passed; no Azure deployment in CI job." >> "$GITHUB_STEP_SUMMARY"
+      - name: Remove private checkout and temporary logs
+        if: always()
+        run: |
+          rm -rf app-src
+          rm -f "$RUNNER_TEMP/coderats-private-ci.log"
+
+  report:
+    name: Report central CI status back to the source commit
+    needs: [authorize, test]
+    if: always() && needs.authorize.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: ci
+    permissions:
+      contents: read
+    steps:
+      # This is a separate runner from the one executing untrusted source tests.
+      # Only this job receives the short-lived GitHub App statuses:write token.
+      - name: Mint status-only GitHub App token for the source repository
+        uses: actions/create-github-app-token@v2
+        id: status
+        with:
+          app-id: ${{ vars.CODERATS_CI_APP_ID }}
+          private-key: ${{ secrets.CODERATS_CI_APP_PRIVATE_KEY }}
+          owner: coderats-hub
+          repositories: ${{ needs.authorize.outputs.repository }}
+          permission-contents: read
+          permission-statuses: write
+      - name: Write commit status to source repository
+        env:
+          GH_TOKEN: ${{ steps.status.outputs.token }}
+          PRIVATE_REPO: coderats-hub/${{ needs.authorize.outputs.repository }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          TEST_RESULT: ${{ needs.test.result }}
+          CI_URL: https://github.com/coderats-hub/coderats-deploy/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          if [[ "$TEST_RESULT" == "success" ]]; then
+            state=success
+            description="Central CodeRats CI passed"
+          else
+            state=failure
+            description="Central CodeRats CI failed or was cancelled"
+          fi
+          gh api -X POST "repos/$PRIVATE_REPO/statuses/$SOURCE_SHA" \
+            -f state="$state" \
+            -f context="coderats/central-ci" \
+            -f description="$description" \
+            -f target_url="$CI_URL" >/dev/null
+          echo "Source commit status reported; no private logs published."
+
+  release:
+    name: Release develop only after successful central CI and opt-in
+    needs: [authorize, test, report]
+    if: needs.test.result == 'success' && needs.report.result == 'success' && inputs.trigger == 'develop' && (inputs.service == 'web' || inputs.service == 'api' || inputs.service == 'grader')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: dev
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - name: Stop if autonomous release was not approved at environment level
+        id: enabled
+        env:
+          ENABLED: ${{ vars.CODERATS_AUTO_RELEASES_ENABLED }}
+        run: |
+          set -euo pipefail
+          if [[ "$ENABLED" != "true" ]]; then
+            echo "Automated production release is disabled. CI succeeded without deployment." >> "$GITHUB_STEP_SUMMARY"
+            echo "value=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Authenticate source HEAD check with read-only GitHub App
+        if: steps.enabled.outputs.value == 'true'
+        uses: actions/create-github-app-token@v2
+        id: source
+        with:
+          app-id: ${{ vars.CODERATS_DEPLOY_APP_ID }}
+          private-key: ${{ secrets.CODERATS_DEPLOY_APP_PRIVATE_KEY }}
+          owner: coderats-hub
+          repositories: ${{ needs.authorize.outputs.repository }}
+          permission-contents: read
+      - name: Dispatch central SHA-pinned deploy when develop still matches tested commit
+        if: steps.enabled.outputs.value == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRIVATE_TOKEN: ${{ steps.source.outputs.token }}
+          REPOSITORY: coderats-hub/${{ needs.authorize.outputs.repository }}
+          CENTRAL_REPOSITORY: coderats-hub/coderats-deploy
+          PIN: ${{ inputs.source_sha }}
+          SERVICE: ${{ inputs.service }}
+        run: |
+          set -euo pipefail
+          tip="$(GH_TOKEN="$PRIVATE_TOKEN" gh api "repos/$REPOSITORY/branches/develop" --jq '.commit.sha')"
+          if [[ "$tip" != "$PIN" ]]; then
+            echo "Skipped outdated source commit: develop already advanced." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if [[ "$SERVICE" == "grader" ]]; then
+            workflow=deploy-grader-dev.yml
+            gh workflow run "$workflow" -R "$CENTRAL_REPOSITORY" --ref main \
+              -f source_sha="$PIN" -f confirmation=AUTO_DEPLOY_DEV
+          else
+            workflow=deploy-private-dev.yml
+            gh workflow run "$workflow" -R "$CENTRAL_REPOSITORY" --ref main \
+              -f service="$SERVICE" -f source_sha="$PIN" -f confirmation=AUTO_DEPLOY_DEV
+          fi
+          echo "Central $SERVICE deploy accepted for immutable source commit; health verification occurs in the release workflow." >> "$GITHUB_STEP_SUMMARY"

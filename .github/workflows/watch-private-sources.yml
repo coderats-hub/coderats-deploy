@@ -1,0 +1,58 @@
+name: Watch private CodeRats source changes (central only)
+
+# Native cross-repository push/PR triggers do not exist in GitHub Actions.
+# This watcher polls all nine CodeRats source repositories; no source workflow runs.
+on:
+  schedule:
+    - cron: "3/5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: coderats-private-source-watcher
+  cancel-in-progress: false
+
+jobs:
+  discover:
+    # Central source validation always runs. Production release is separately
+    # gated after CI in validate-private-source.yml.
+    if: github.repository == 'coderats-hub/coderats-deploy' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: dev
+    steps:
+      - name: Checkout trusted central watcher code
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate watcher logic without accessing private repositories
+        run: python3 -m unittest discover -s tests -p 'test_source_watcher.py' -v
+      - name: Acquire least-privileged cross-repository GitHub App token
+        id: app
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.CODERATS_DEPLOY_APP_ID }}
+          private-key: ${{ secrets.CODERATS_DEPLOY_APP_PRIVATE_KEY }}
+          owner: coderats-hub
+          repositories: |
+            web-coderats-base
+            api-coderats-base
+            api-grader-coderats
+            coderats-base-infra
+            coderats-skills
+            coderats-rag
+            coderats-workspace
+            web-coderats-education
+            web-coderats-enterprise
+            cicd-templates
+          permission-contents: read
+          permission-pull-requests: read
+      - name: Discover new source commits and PR updates
+        env:
+          CENTRAL_TOKEN: ${{ github.token }}
+          PRIVATE_READ_TOKEN: ${{ steps.app.outputs.token }}
+          CENTRAL_REPO: coderats-hub/coderats-deploy
+        run: python3 scripts/watch-source-events.py

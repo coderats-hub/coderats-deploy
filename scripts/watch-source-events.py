@@ -29,6 +29,7 @@ SERVICES = {
     "workspace": "coderats-workspace",
     "education": "web-coderats-education",
     "enterprise": "web-coderats-enterprise",
+    "templates": "cicd-templates",
 }
 BRANCHES = ("develop", "main")
 SOURCE_OWNER = "coderats-hub"

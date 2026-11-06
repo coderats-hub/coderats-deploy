@@ -47,6 +47,7 @@ jobs:
             coderats-workspace
             web-coderats-education
             web-coderats-enterprise
+            cicd-templates
           permission-contents: read
           permission-pull-requests: read
       - name: Discover new source commits and PR updates

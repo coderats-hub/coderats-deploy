@@ -6,7 +6,7 @@ on:
         description: Exact CodeRats service to validate
         required: true
         type: choice
-        options: [web, api, grader, infra, skills, rag, workspace, education, enterprise]
+        options: [web, api, grader, infra, skills, rag, workspace, education, enterprise, templates]
       source_sha:
         description: Immutable commit from the owning private repository
         required: true
@@ -60,6 +60,7 @@ jobs:
             workspace) repository=coderats-workspace ;;
             education) repository=web-coderats-education ;;
             enterprise) repository=web-coderats-enterprise ;;
+            templates) repository=cicd-templates ;;
             *) exit 1 ;;
           esac
           case "$TRIGGER" in
@@ -189,6 +190,9 @@ jobs:
               ;;
             education|enterprise)
               command='npm ci --no-audit --no-fund && npx tsc --noEmit && npm run build'
+              ;;
+            templates)
+              command='docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.12 -no-color && docker run --rm -v "$PWD:/mnt" -w /mnt koalaman/shellcheck-alpine:v0.11.0 sh -c '''find templates -name "*.sh" -type f -print0 | xargs -0 -r shellcheck''''
               ;;
             *) exit 1 ;;
           esac

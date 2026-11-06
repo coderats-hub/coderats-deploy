@@ -1,0 +1,118 @@
+name: Validate private CodeRats source SHA (central only)
+on:
+  workflow_dispatch:
+    inputs:
+      service:
+        required: true
+        type: choice
+        options: [web, api, grader]
+      source_sha:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: coderats-private-ci-${{ inputs.service }}-${{ inputs.source_sha }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    if: github.repository == 'coderats-hub/coderats-deploy' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: dev
+    steps:
+      - name: Resolve trusted service / commit
+        id: source
+        env:
+          SERVICE: ${{ inputs.service }}
+          SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          case "$SERVICE" in
+            web) repository=web-coderats-base ;;
+            api) repository=api-coderats-base ;;
+            grader) repository=api-grader-coderats ;;
+            *) echo "::error::Invalid service"; exit 1 ;;
+          esac
+          echo "repository=$repository" >> "$GITHUB_OUTPUT"
+      - name: Get source read-only token
+        id: token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.CODERATS_DEPLOY_APP_ID }}
+          private-key: ${{ secrets.CODERATS_DEPLOY_APP_PRIVATE_KEY }}
+          owner: coderats-hub
+          repositories: ${{ steps.source.outputs.repository }}
+          permission-contents: read
+          permission-pull-requests: read
+      - name: Check SHA is a trusted branch tip or same-repository PR head
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          PRIVATE_REPO: coderats-hub/${{ steps.source.outputs.repository }}
+          PIN: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          matched=0
+          for branch in develop main; do
+            tip="$(gh api "repos/$PRIVATE_REPO/branches/$branch" --jq '.commit.sha' 2>/dev/null || true)"
+            [[ "$tip" == "$PIN" ]] && matched=1
+          done
+          if [[ "$matched" == 0 ]]; then
+            if gh api --paginate "repos/$PRIVATE_REPO/pulls?state=open&per_page=100" | \
+              jq -e --arg pin "$PIN" --arg repo "$PRIVATE_REPO" \
+                'any(.[]; .head.sha == $pin and .head.repo.full_name == $repo and (.base.ref == "develop" or .base.ref == "main"))' >/dev/null; then
+              matched=1
+            fi
+          fi
+          [[ "$matched" == 1 ]] || {
+            echo "::error::SHA is not current branch head or authorized internal PR head"; exit 1;
+          }
+      - name: Checkout private source SHA without persisting tokens
+        uses: actions/checkout@v4
+        with:
+          repository: coderats-hub/${{ steps.source.outputs.repository }}
+          ref: ${{ inputs.source_sha }}
+          token: ${{ steps.token.outputs.token }}
+          persist-credentials: false
+          path: app-src
+      - name: Node 24
+        if: inputs.service == 'web'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Java 21
+        if: inputs.service == 'api'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Python 3.12
+        if: inputs.service == 'grader'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Private checks - do not publish private logs
+        env:
+          SERVICE: ${{ inputs.service }}
+          NEXT_PUBLIC_API_URL: https://coderats.club
+        working-directory: app-src
+        run: |
+          set -euo pipefail
+          log="$RUNNER_TEMP/coderats-private-ci.log"
+          case "$SERVICE" in
+            web) command="npm ci --no-audit --no-fund && npm test && npm run test:ws && npx tsc --noEmit && npm run build -- --webpack" ;;
+            api) command="chmod +x ./mvnw && ./mvnw --batch-mode verify" ;;
+            grader) command="python -m pip install --disable-pip-version-check -r requirements.txt && python -m pytest -q tests/unit" ;;
+          esac
+          if ! bash -ec "$command" > "$log" 2>&1; then
+            echo "::error::Private $SERVICE verification failed. Details retained only on ephemeral runner."
+            exit 1
+          fi
+          echo "$SERVICE source checks passed; no deployment performed" >> "$GITHUB_STEP_SUMMARY"
+      - name: Purge private workspace on completion
+        if: always()
+        run: rm -rf app-src

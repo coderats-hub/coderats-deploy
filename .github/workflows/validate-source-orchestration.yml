@@ -1,0 +1,32 @@
+name: Verify central source-watcher safely
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/watch-private-sources.yml'
+      - '.github/workflows/deploy-private-dev.yml'
+      - '.github/workflows/deploy-grader-dev.yml'
+      - '.github/workflows/validate-private-source.yml'
+      - 'scripts/watch-source-events.py'
+      - 'tests/test_source_watcher.py'
+      - 'docs/central-auto-release.md'
+permissions:
+  contents: read
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Python compile and unit tests (no private source or credentials)
+        run: |
+          python3 -m py_compile scripts/watch-source-events.py
+          python3 -m unittest discover -s tests -p test_source_watcher.py -v
+      - name: Parse workflow YAML
+        run: |
+          ruby -rpsych -e 'ARGV.each { |f| Psych.parse_file(f) }' \
+            .github/workflows/watch-private-sources.yml \
+            .github/workflows/deploy-private-dev.yml \
+            .github/workflows/deploy-grader-dev.yml \
+            .github/workflows/validate-private-source.yml

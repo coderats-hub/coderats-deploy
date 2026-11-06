@@ -6,7 +6,7 @@ on:
         description: Exact CodeRats service to validate
         required: true
         type: choice
-        options: [web, api, grader]
+        options: [web, api, grader, infra, skills, rag, workspace, education, enterprise]
       source_sha:
         description: Immutable commit from the owning private repository
         required: true
@@ -54,6 +54,12 @@ jobs:
             web) repository=web-coderats-base ;;
             api) repository=api-coderats-base ;;
             grader) repository=api-grader-coderats ;;
+            infra) repository=coderats-base-infra ;;
+            skills) repository=coderats-skills ;;
+            rag) repository=coderats-rag ;;
+            workspace) repository=coderats-workspace ;;
+            education) repository=web-coderats-education ;;
+            enterprise) repository=web-coderats-enterprise ;;
             *) exit 1 ;;
           esac
           case "$TRIGGER" in
@@ -130,7 +136,7 @@ jobs:
           persist-credentials: false
           path: app-src
       - name: Node 24
-        if: inputs.service == 'web'
+        if: inputs.service == 'web' || inputs.service == 'education' || inputs.service == 'enterprise'
         uses: actions/setup-node@v4
         with:
           node-version: '24'
@@ -141,10 +147,15 @@ jobs:
           distribution: temurin
           java-version: '21'
       - name: Python 3.12
-        if: inputs.service == 'grader'
+        if: inputs.service == 'grader' || inputs.service == 'skills' || inputs.service == 'rag'
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Setup Terraform CLI for offline infrastructure checks
+        if: inputs.service == 'infra'
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.16.0'
       - name: Execute private tests and build without publishing source logs
         working-directory: app-src
         env:
@@ -162,6 +173,22 @@ jobs:
               ;;
             grader)
               command='python -m pip install --disable-pip-version-check -r requirements.txt && python -m compileall -q web autograder sandbox_manager && python -m pytest -q tests/unit'
+              ;;
+            infra)
+              # Never run terraform plan/apply or Azure OIDC from source CI.
+              command='terraform fmt -check -recursive terraform && bash -n .github/scripts/recover-dev-secrets.sh'
+              ;;
+            skills)
+              command='python3 scripts/validate_skills.py . && python3 -m unittest discover -s tests -v'
+              ;;
+            rag)
+              command='python3 scripts/validate.py && python3 -m unittest discover -s tests -v && python3 scripts/build_index.py --output /tmp/coderats-rag-ci-chunks.jsonl'
+              ;;
+            workspace)
+              command='test -s AGENTS.md && test -s README.md && test -s repos.txt && bash -n scripts/bootstrap.sh'
+              ;;
+            education|enterprise)
+              command='npm ci --no-audit --no-fund && npx tsc --noEmit && npm run build'
               ;;
             *) exit 1 ;;
           esac
@@ -224,7 +251,7 @@ jobs:
   release:
     name: Release develop only after successful central CI and opt-in
     needs: [authorize, test, report]
-    if: needs.test.result == 'success' && needs.report.result == 'success' && inputs.trigger == 'develop'
+    if: needs.test.result == 'success' && needs.report.result == 'success' && inputs.trigger == 'develop' && (inputs.service == 'web' || inputs.service == 'api' || inputs.service == 'grader')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: dev

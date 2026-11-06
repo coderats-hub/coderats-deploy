@@ -192,7 +192,7 @@ jobs:
               command='npm ci --no-audit --no-fund && npx tsc --noEmit && npm run build'
               ;;
             templates)
-              command='docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.12 -no-color && docker run --rm -v "$PWD:/mnt" -w /mnt koalaman/shellcheck-alpine:v0.11.0 sh -c '''find templates -name "*.sh" -type f -print0 | xargs -0 -r shellcheck''''
+              command='docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.12 -no-color && docker run --rm -v "$PWD:/mnt" -w /mnt koalaman/shellcheck-alpine:v0.11.0 shellcheck $(find templates -type f -name "*.sh" | sort)'
               ;;
             *) exit 1 ;;
           esac

@@ -17,8 +17,8 @@ concurrency:
 
 jobs:
   discover:
-    # The live DEV environment serves coderats.club. Automation is disabled
-    # until a maintainer explicitly enables the DEV environment variable.
+    # Central source validation always runs. Production release is separately
+    # gated after CI in validate-private-source.yml.
     if: github.repository == 'coderats-hub/coderats-deploy' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -47,6 +47,5 @@ jobs:
         env:
           CENTRAL_TOKEN: ${{ github.token }}
           PRIVATE_READ_TOKEN: ${{ steps.app.outputs.token }}
-          ENABLE_AUTO: ${{ vars.CODERATS_AUTO_RELEASES_ENABLED }}
           CENTRAL_REPO: coderats-hub/coderats-deploy
         run: python3 scripts/watch-source-events.py

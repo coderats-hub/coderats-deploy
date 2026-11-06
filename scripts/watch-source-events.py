@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Central polling of private source branches/PRs; no code output or unsafe refs.
+"""Central-only CI discovery for source branch/PR commits; no deploy from watcher.
 
 Authentication:
  - PRIVATE_READ_TOKEN is a GitHub App installation token, contents/read and pulls/read.
@@ -56,12 +56,10 @@ def changed_commits(old: str, new: str, compare: dict) -> list[str]:
 
 
 def route_event(service: str, branch: str) -> str:
-    """No unconfigured prod deploys: main goes to validation, develop to release."""
+    """Every source branch is CI-only at discovery time; release happens after CI."""
     if service not in SERVICES or branch not in BRANCHES:
         raise ValueError("Unexpected service/branch")
-    if branch == "main":
-        return "validate-private-source.yml"
-    return "deploy-grader-dev.yml" if service == "grader" else "deploy-private-dev.yml"
+    return "validate-private-source.yml"
 
 
 class API:
@@ -144,22 +142,23 @@ class API:
                            method="PUT", data=payload)
         self._state_blob = result["content"]["sha"]
 
-    def dispatch(self, workflow: str, service: str, sha: str):
-        if not SHA_PATTERN.fullmatch(sha):
-            raise ValueError("Invalid source SHA for dispatch")
-        if workflow == "deploy-private-dev.yml":
-            inputs = {"service": service, "source_sha": sha, "confirmation": "AUTO_DEPLOY_DEV"}
-        elif workflow == "deploy-grader-dev.yml":
-            inputs = {"source_sha": sha, "confirmation": "AUTO_DEPLOY_DEV"}
-        elif workflow == "validate-private-source.yml":
-            inputs = {"service": service, "source_sha": sha}
-        else:
-            raise ValueError("Unapproved central workflow")
+    def dispatch(self, workflow: str, service: str, sha: str,
+                 trigger: str = "develop", pr_number: int = 0):
+        if not SHA_PATTERN.fullmatch(sha) or service not in SERVICES:
+            raise ValueError("Invalid source SHA/service for dispatch")
+        if workflow != "validate-private-source.yml" or trigger not in {"develop", "main", "pr"}:
+            raise ValueError("Only central CI may be dispatched by the watcher")
+        if trigger == "pr" and pr_number <= 0:
+            raise ValueError("PR number required for PR CI")
+        inputs = {
+            "service": service, "source_sha": sha,
+            "trigger": trigger, "pr_number": str(pr_number),
+        }
         self.call(f"repos/{self.central_repo}/actions/workflows/{workflow}/dispatches",
                   method="POST", data={"ref": "main", "inputs": inputs})
 
 
-def scan_branches(api: API, enabled: bool):
+def scan_branches(api: API, enabled: bool = True):
     for service in SERVICES:
         repo = source_repo(service)
         for branch in BRANCHES:
@@ -179,22 +178,18 @@ def scan_branches(api: API, enabled: bool):
                 continue
             if previous == sha:
                 continue
-            if not enabled:
-                api.save(key, sha)
-                print(f"Tracking disabled release {service}/{branch} (audit only).")
-                continue
             comp = api.call(f"repos/{repo}/compare/{previous}...{sha}", private=True)
             commits = changed_commits(previous, sha, comp)
             workflow = route_event(service, branch)
-            # In this order: older runs fail closed against current branch HEAD
-            # in the deployment workflow, latest SHA is the only releasable one.
+            # Each reachable new commit is validated at an immutable SHA.
+            # No source changes dispatch releases directly: CI is the gate.
             for new_sha in commits:
-                api.dispatch(workflow, service, new_sha)
-            api.save(key, sha)      # Save only after every dispatch was accepted.
-            print(f"Queued {len(commits)} central events for {service}/{branch}.")
+                api.dispatch(workflow, service, new_sha, trigger=branch)
+            api.save(key, sha)      # Advance only after every CI dispatch is accepted.
+            print(f"Queued {len(commits)} central CI runs for {service}/{branch}.")
 
 
-def scan_prs(api: API, enabled: bool):
+def scan_prs(api: API, enabled: bool = True):
     for service in SERVICES:
         repo = source_repo(service)
         page = 1
@@ -217,11 +212,10 @@ def scan_prs(api: API, enabled: bool):
                 key = f"CODERATS_PR_{service.upper()}_{number}"
                 previous = api.state(key)
                 if previous is None or previous != sha:
-                    if enabled:
-                        api.dispatch("validate-private-source.yml", service, sha)
+                    api.dispatch("validate-private-source.yml", service, sha,
+                                 trigger="pr", pr_number=number)
                     api.save(key, sha)
-                    if enabled:
-                        print(f"Queued central PR validation for {service} PR #{number}.")
+                    print(f"Queued central PR validation for {service} PR #{number}.")
             if len(pulls) < 100:
                 break
             page += 1
@@ -235,13 +229,12 @@ def main():
     central_repo = os.environ.get("CENTRAL_REPO")
     if central_repo != "coderats-hub/coderats-deploy":
         raise ValueError("Refusing to execute outside CodeRats central repo")
-    enabled = os.environ.get("ENABLE_AUTO", "").lower() == "true"
     api = API(central_token, private_token, central_repo)
-    if not enabled:
-        print("Central auto-release flag is disabled; baselines only.")
-    scan_branches(api, enabled=enabled)
-    scan_prs(api, enabled=enabled)
-    print("Private source event scan finished; no private content was printed.")
+    # Central CI is unconditional. Separate DEV release authorization lives
+    # exclusively in the post-CI stage of validate-private-source.yml.
+    scan_branches(api)
+    scan_prs(api)
+    print("Private source CI discovery finished; no private content was printed.")
 
 
 if __name__ == "__main__":

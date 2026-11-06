@@ -1,58 +1,71 @@
-# Central source event orchestration (opt-in rollout)
+# Centralized CodeRats CI and deployment migration
 
-> **DEV is the live coderats.club.** Infrastructure, GET replay and data-repair workflows are not covered by automatic source releases. The new watcher is deliberately **disabled by default**.
+> **DRAFT – not active on main.** DEV is the production site `coderats.club`.
+> All three application repositories will become source-only: every CI check,
+> private test/build and app deployment is executed in `coderats-deploy`.
 
-## Why polling?
-GitHub Actions `push` / `pull_request` events are repository-local. To remove automatic source-repository Actions *entirely*, we cannot use local forwarding workflows. The central repo uses a scheduled read-only GitHub App scan every five minutes. GitHub may delay/drop scheduled runs. This is not instant webhooks and does not guarantee an event for unreachable force-pushed commits.
+## Why scheduled detection?
 
-## Release matrix
+GitHub Actions `push` and `pull_request` triggers cannot watch other repositories directly. Removing workflows from private source repositories requires a trusted cross-repository notifier. This design uses a GitHub App read-only poll every five minutes (subject to scheduler delays). It stores only SHA cursors in the public central `central-watch-state` branch. A future verified webhook receiver may replace polling.
 
-| Source | Branch | Central workflow |
+## Routing
+
+| Source event | Central workflow | Azure publication |
 |---|---|---|
-| web-coderats-base | develop | deploy-private-dev.yml (web) |
-| api-coderats-base | develop | deploy-private-dev.yml (api) |
-| api-grader-coderats | develop | deploy-grader-dev.yml |
-| those same three | main | validate-private-source.yml (CI only) |
-| those same three | internal PR targeting develop/main | validate-private-source.yml (CI only) |
-| any repo | PR code before merge | **never auto-deployed** |
-| coderats-base-infra | main | **no automatic Terraform apply**; GET batch remains in central deploy |
-| Education / Enterprise | main | no deploy: no current verified runtime/release target |
+| Web `develop` commit | `validate-private-source.yml`: Node 24, npm tests, WebSocket tests, TypeScript, Next build; status back to source SHA | Only after CI status success and opt-in, `deploy-private-dev.yml` (web) |
+| API `develop` commit | `validate-private-source.yml`: Java 21, Maven verify incl. tests; status back to source SHA | Only after CI success and opt-in, `deploy-private-dev.yml` (api) |
+| Grader `develop` commit | `validate-private-source.yml`: Python 3.12, dependency check, compilation, pytest; status back to source SHA | Only after CI success and opt-in, `deploy-grader-dev.yml` |
+| Web/API/Grader `main` commit | Same centralized CI, status back to source SHA | **No deploy.** There is no separate `prd` stage |
+| Internal PR opened or updated, targeting `main`/`develop` | Same centralized CI against exact PR head SHA | **No deploy** |
+| `coderats-base-infra` `main` | Terraform lifecycle is separate; do not apply automatically | No automatic `terraform apply` |
+| Education / Enterprise | No live app environment configured | No deploy |
+| GET worker | Central 15-minute bounded GET workflow | Existing central GET job, never private repo cron |
 
-**Main does not map to a configured production environment.** The only live environment is DEV, whose operational source is `develop`. A `main` push is detected and validated but must not deploy over DEV with an older or conflicting source. Creating a real production stage needs separate infrastructure, credentials and policy.
+Each event passes a **source service, exact 40-character SHA, and trigger type** to central CI. Authorization checks GitHub App repository visibility and verifies that the SHA is a current same-repo PR head or is reachable from the claimed source branch. A branch comparison captures each reachable commit; each gets its own CI run, even while autonomous deployment is disabled. The first watcher pass establishes a branch baseline, avoiding mass historical CI runs; newly opened/updated internal PRs are validated.
 
-## How the watcher works
+## Security: separate CI from release
 
-1. `.github/workflows/watch-private-sources.yml` uses the existing protected GitHub App credential in central `dev`. The app needs **Contents: Read** and **Pull requests: Read** on only the three private deployed repositories.
-2. `scripts/watch-source-events.py` reads `main`, `develop`, and open internal PR head SHAs. It stores only SHA identifiers/PR numbers in a separate `central-watch-state` branch of the public central repository (no source code or secrets). It never clones private code.
-3. On first encounter, it baselines each branch (no retroactive deploy); open PRs are validated when the gate is enabled.
-4. With `CODERATS_AUTO_RELEASES_ENABLED=true` in central environment `dev`, each reachable new commit schedules its service workflow. Older queued develop commits are rejected before Azure publication if branch HEAD advanced. The latest HEAD is the only one that can reach Azure.
-5. Successful GitHub dispatch advances the last-observed SHA. A failed deploy is not automatically retried (avoids unbounded production loops). Inspect run and manually repair/release.
-6. PR updates schedule exact-SHA validation; no untrusted fork code and no PR auto-release. Validation workflows suppress private output on public logs.
-7. Source repos remove duplicate deployments. The API database maintenance scheduler and Terraform-specific validations remain source-owned exceptions; **they do not release applications**.
+- The private-source test runner **does not obtain an Azure OIDC token** and has no Azure login, Azure deployment permissions, or central Actions write rights. It uses `environment: ci`; configure its restricted App separately from `environment: dev`.
+- **CI GitHub App** in central `ci` environment: `CODERATS_CI_APP_ID` and `CODERATS_CI_APP_PRIVATE_KEY`, installed only on Web/API/Grader, with **Contents: Read**, **Pull requests: Read**, and **Commit statuses: Read and write**. The verifier/checkout jobs request only read access. The separate status reporter job requests `statuses:write` after tests, on a clean runner, and posts status context `coderats/central-ci` to the corresponding private commit SHA.
+- Test/build output is retained only in the ephemeral CI runner; the public central workflow reports a generic pass/failure, never private source/test names/assertions, logs, secrets or artifacts.
+- Once source branch protections are configured, they may require the `coderats/central-ci` **commit status**, generated by the configured GitHub App. Because the central workflow run belongs to `coderats-deploy`, its Actions checks are **not** automatically source-repo PR checks. The explicit commit status bridges this gap.
+- PR code runs in a private checkout but is still untrusted; review test commands and dependencies. Do not grant Azure credentials, PATs, App admin access or deployment keys to the test runner.
+- **Separate DEV deploy App** remains in `environment: dev` with existing `CODERATS_DEPLOY_APP_ID` and `CODERATS_DEPLOY_APP_PRIVATE_KEY`. The existing Azure OIDC secrets are only consumed by explicit central release jobs, never by PR CI.
+- Central `GITHUB_TOKEN` needs `contents:write` in watcher for the public SHA cursor branch and `actions:write` for dispatching central workflows; no source writes are performed by the watcher.
 
-## Activation checklist (human review required)
+## Safe release chain
 
-1. Merge **central PR first**. Verify GitHub Actions accepts the YAML and the unit tests pass.
-2. Confirm the App installation includes all three private repos and has Contents + Pull Requests read; the central `dev` environment has GitHub App ID and key. Never move secrets to the public workflow source.
-3. Merge disabling PRs for API/web/grader and retire the duplicate GET cron in infra, ensuring no legacy local automatic deploy remains.
-4. Check source repo branch protection rules: central PR validation does not produce check results on the source PR. Retain compatible local **non-deploy CI** if required, or redesign the required-check mechanism.
-5. Run `Watch private CodeRats source changes` manually while the flag is false and inspect the state file on branch `central-watch-state`. This is baseline-only and not a release.
-6. Set environment variable `CODERATS_AUTO_RELEASES_ENABLED=true` **only after** the above are complete and operators explicitly accept that future develop pushes/merges will deploy to the real site without per-deploy confirmation. No repo variable should bypass this environment flag.
-7. Verify the first new commit on a test branch/PR, then a deliberately approved develop change. Watch validation, deployment SHA, health/readiness and GET job. Confirm no duplicate local actions.
+1. Source watcher sees a private branch commit or internal PR head change.
+2. It dispatches **only** `validate-private-source.yml`, never a release workflow.
+3. Central CI validates a trustworthy source SHA, clones the exact private commit, runs tests and build, and reports the outcome to the source repository.
+4. Only if **tests passed**, **source status was published successfully**, event type is **develop**, and the `dev` environment variable `CODERATS_AUTO_RELEASES_ENABLED=true`, the release job verifies that the tested SHA is still the current `develop` tip.
+5. Only then does it dispatch the appropriate central DEV release workflow with `AUTO_DEPLOY_DEV`, which again pins and verifies the source SHA, runs its release gates and checks the final Azure revision/health.
+6. Old commits can be validated but **cannot roll back the running site**, because stale SHA release requests fail closed at both CI and deployment. Failed CI or status publishing cannot trigger a release.
 
-## Observability and risks
+**Manual workflow dispatch of a DEV release** still requires explicit confirmation and existing runbook checks. The opt-in flag for future push/merge deployments must not be enabled casually: once enabled, all subsequent `develop` commits can affect live users. Rollback remains manual, requires explicit approval, and must account for Flyway migrations.
 
-- Source watch schedule may run with delays and can miss force-pushed commits no longer reachable; it **fails closed** on non-fast-forward branch changes or truncated commit comparisons.
-- Branch state updates after dispatch acceptance, **not** deploy success. Treat CI failure and failed deploy as incidents to resolve, not silent retrials.
-- Multiple commits may queue validations/releases; stale builds may fail as intended. No older SHA should replace newer live content.
-- Shared GET cron already runs every 15 minutes from central. Disable duplicate infra schedule only after confirming central health.
-- The public deploy repo must never emit private code, test bodies, build logs or secret values.
-- GitHub Actions private-source public-runner policies, plan quotas and token scopes require organization review.
-- Do not deploy from `main` into DEV, auto-apply Terraform, or deploy Education/Enterprise without separate approved release targets.
+## Removing local Actions
 
-## Further hardening
-An org-level GitHub App webhook receiver can replace polling when approved; it must authenticate webhook signatures, restrict repository/branch/events, and safely dispatch central workflows without exposing private payloads.
+- Delete application `cloud.yml` workflows (they include both CI and Azure release).
+- Remove `web-coderats-base` local `release-profile-ci.yml`, `get-beta-dev-deploy.yml` and local Azure diagnostic workflow, replacing needed checks with the central CI gate.
+- Remove the API `backend` job, local `pull_request`/`push` CI and `schedule` on `api-coderats-base/.github/workflows/main.yml`. A **manual, non-CI** database administration workflow may remain for exceptional DB maintenance, separate from CI/deploy, subject to approval.
+- Remove the duplicate `coderats-base-infra` scheduled GET worker publisher; central GET remains. Terraform review and infrastructure maintenance are **not** application CI or auto-deploy and require their own safety controls.
+- Do not weaken branch protections or treat a `coderats-deploy` CI run as a source-repo required check until source commit status posting is confirmed.
 
-## State permissions
+## Activation checklist
 
-The watcher uses `GITHUB_TOKEN` with `contents:write` to create/update only the `central-watch-state` branch (JSON SHA cursor) and `actions:write` for central workflow dispatch. GitHub Actions repository variables require a separate Variables permission, which is not available through this built-in token. No additional PAT or GitHub App write permission is used for the source cursor. The state branch is **public metadata** and must never contain commit messages, diffs, tokens, user data or private source.
+1. Review/merge **central PR #6** before source PRs, with auto-deploy environment flag unset or false. Validate YAML, watcher tests and new central workflow syntax.
+2. Create/configure central **`ci`** environment with App ID + private key. Verify the App is installed on all three source repositories and granted Contents Read, Pull requests Read, Commit statuses Write. Ensure branch protections can require the `coderats/central-ci` commit status.
+3. Merge paired source PRs deleting local application CI and deploy workflows on both `develop` and `main` where applicable, and consolidate the GET cron in infra.
+4. Run central source watcher once manually to establish source branch baselines and verify open PR CI dispatch. Confirm statuses appear on the corresponding source commits. This run **does not deploy** if auto-release flag is false.
+5. Confirm central CI succeeds for Web/API/Grader; run source branch protection verification. Ensure no old Azure release jobs remain in source repositories and no active concurrent deployments.
+6. Only **after deliberate approval of permanent merge-triggered live releases**, set `CODERATS_AUTO_RELEASES_ENABLED=true` in central `dev` environment. Verify one approved `develop` commit, exact SHA, Azure ready revision and health checks.
+7. On failure, disable the flag and follow the manual central incident/rollback runbook. CI and release runs are not blindly retried.
+
+## Known limitations
+
+- A five-minute schedule is best effort. Missed runs/force pushes/reconciliations may require manual repair of the public SHA cursor.
+- A failed CI run is not automatically retried by watcher after its accepted dispatch is recorded; inspect central failures and rerun only after diagnosis.
+- Central CI builds private sources on GitHub-hosted runners belonging to a public deployment repository; confirm GitHub terms, retention policies, and plan quotas with organization administrators.
+- Public action metadata may reveal repo names/commit SHA; source code, private test output and credentials must never appear in public logs.
+- This change does **not** automate Terraform application, production schema migration approvals, GET data replays or deployments of unconfigured Education/Enterprise services.

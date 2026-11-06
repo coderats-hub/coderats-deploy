@@ -4,11 +4,14 @@
 Authentication:
  - PRIVATE_READ_TOKEN is a GitHub App installation token, contents/read and pulls/read.
  - CENTRAL_TOKEN is the central repo's GITHUB_TOKEN, actions/write.
-The state is repository Actions Variables (public SHA identifiers only).
+The state is stored on a dedicated central repository Git branch, not
+repository Actions Variables (GITHUB_TOKEN does not have Variables permission).
+Only low-sensitivity source SHA identifiers / PR numbers are stored; no code.
 No source workflows, webhook receiver, PATs or private logging.
 """
 from __future__ import annotations
 import json
+import base64
 import os
 import re
 import sys
@@ -91,21 +94,55 @@ class API:
             # Never log a raw API response body: GitHub payloads may contain private data.
             raise RuntimeError(f"GitHub API {method} failed with HTTP {error.code}") from None
 
-    def state(self, name: str):
-        row = self.call(f"repos/{self.central_repo}/actions/variables/{name}",
+    STATE_BRANCH = "central-watch-state"
+    STATE_PATH = ".github/source-watcher-state.json"
+
+    def _init_state(self):
+        if hasattr(self, "_state_rows"):
+            return
+        ref = self.call(f"repos/{self.central_repo}/git/ref/heads/{self.STATE_BRANCH}",
                         allow_not_found=True)
-        return None if row is None else row["value"]
+        if ref is None:
+            main = self.call(f"repos/{self.central_repo}/git/ref/heads/main")
+            self.call(f"repos/{self.central_repo}/git/refs", method="POST",
+                      data={"ref": "refs/heads/" + self.STATE_BRANCH,
+                            "sha": main["object"]["sha"]})
+        row = self.call(
+            f"repos/{self.central_repo}/contents/{self.STATE_PATH}?ref={self.STATE_BRANCH}",
+            allow_not_found=True)
+        if row is None:
+            self._state_rows = {}
+            self._state_blob = None
+        else:
+            raw = base64.b64decode(row["content"])
+            data = json.loads(raw.decode("utf-8"))
+            if not isinstance(data, dict) or not all(
+                isinstance(k, str) and isinstance(v, str) and SHA_PATTERN.fullmatch(v)
+                for k, v in data.items()
+            ):
+                raise ValueError("Source watcher state is corrupt; manual repair needed")
+            self._state_rows = data
+            self._state_blob = row["sha"]
+
+    def state(self, name: str):
+        self._init_state()
+        return self._state_rows.get(name)
 
     def save(self, name: str, sha: str):
         if not SHA_PATTERN.fullmatch(sha):
             raise ValueError("Invalid source SHA for state")
-        current = self.state(name)
-        if current is None:
-            self.call(f"repos/{self.central_repo}/actions/variables",
-                      method="POST", data={"name": name, "value": sha})
-        else:
-            self.call(f"repos/{self.central_repo}/actions/variables/{name}",
-                      method="PATCH", data={"name": name, "value": sha})
+        self._init_state()
+        self._state_rows[name] = sha
+        data = base64.b64encode(
+            (json.dumps(self._state_rows, indent=2, sort_keys=True) + "\n").encode("utf-8")
+        ).decode("ascii")
+        payload = {"message": "chore(state): update source watcher cursor",
+                   "content": data, "branch": self.STATE_BRANCH}
+        if self._state_blob:
+            payload["sha"] = self._state_blob
+        result = self.call(f"repos/{self.central_repo}/contents/{self.STATE_PATH}",
+                           method="PUT", data=payload)
+        self._state_blob = result["content"]["sha"]
 
     def dispatch(self, workflow: str, service: str, sha: str):
         if not SHA_PATTERN.fullmatch(sha):

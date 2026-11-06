@@ -23,7 +23,7 @@ GitHub Actions `push` / `pull_request` events are repository-local. To remove au
 ## How the watcher works
 
 1. `.github/workflows/watch-private-sources.yml` uses the existing protected GitHub App credential in central `dev`. The app needs **Contents: Read** and **Pull requests: Read** on only the three private deployed repositories.
-2. `scripts/watch-source-events.py` reads `main`, `develop`, and open internal PR head SHAs. It persists only SHA identifiers in central GitHub Actions Variables. It never clones private code.
+2. `scripts/watch-source-events.py` reads `main`, `develop`, and open internal PR head SHAs. It stores only SHA identifiers/PR numbers in a separate `central-watch-state` branch of the public central repository (no source code or secrets). It never clones private code.
 3. On first encounter, it baselines each branch (no retroactive deploy); open PRs are validated when the gate is enabled.
 4. With `CODERATS_AUTO_RELEASES_ENABLED=true` in central environment `dev`, each reachable new commit schedules its service workflow. Older queued develop commits are rejected before Azure publication if branch HEAD advanced. The latest HEAD is the only one that can reach Azure.
 5. Successful GitHub dispatch advances the last-observed SHA. A failed deploy is not automatically retried (avoids unbounded production loops). Inspect run and manually repair/release.
@@ -36,7 +36,7 @@ GitHub Actions `push` / `pull_request` events are repository-local. To remove au
 2. Confirm the App installation includes all three private repos and has Contents + Pull Requests read; the central `dev` environment has GitHub App ID and key. Never move secrets to the public workflow source.
 3. Merge disabling PRs for API/web/grader and retire the duplicate GET cron in infra, ensuring no legacy local automatic deploy remains.
 4. Check source repo branch protection rules: central PR validation does not produce check results on the source PR. Retain compatible local **non-deploy CI** if required, or redesign the required-check mechanism.
-5. Run `Watch private CodeRats source changes` manually while the flag is false and inspect the state variables. This is baseline-only and not a release.
+5. Run `Watch private CodeRats source changes` manually while the flag is false and inspect the state file on branch `central-watch-state`. This is baseline-only and not a release.
 6. Set environment variable `CODERATS_AUTO_RELEASES_ENABLED=true` **only after** the above are complete and operators explicitly accept that future develop pushes/merges will deploy to the real site without per-deploy confirmation. No repo variable should bypass this environment flag.
 7. Verify the first new commit on a test branch/PR, then a deliberately approved develop change. Watch validation, deployment SHA, health/readiness and GET job. Confirm no duplicate local actions.
 
@@ -52,3 +52,7 @@ GitHub Actions `push` / `pull_request` events are repository-local. To remove au
 
 ## Further hardening
 An org-level GitHub App webhook receiver can replace polling when approved; it must authenticate webhook signatures, restrict repository/branch/events, and safely dispatch central workflows without exposing private payloads.
+
+## State permissions
+
+The watcher uses `GITHUB_TOKEN` with `contents:write` to create/update only the `central-watch-state` branch (JSON SHA cursor) and `actions:write` for central workflow dispatch. GitHub Actions repository variables require a separate Variables permission, which is not available through this built-in token. No additional PAT or GitHub App write permission is used for the source cursor. The state branch is **public metadata** and must never contain commit messages, diffs, tokens, user data or private source.

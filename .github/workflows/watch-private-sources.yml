@@ -1,7 +1,7 @@
 name: Watch private CodeRats source changes (central only)
 
 # Native cross-repository push/PR triggers do not exist in GitHub Actions.
-# This watcher polls the three private deployed services; no source workflow runs.
+# This watcher polls all nine CodeRats source repositories; no source workflow runs.
 on:
   schedule:
     - cron: "3/5 * * * *"
@@ -41,6 +41,12 @@ jobs:
             web-coderats-base
             api-coderats-base
             api-grader-coderats
+            coderats-base-infra
+            coderats-skills
+            coderats-rag
+            coderats-workspace
+            web-coderats-education
+            web-coderats-enterprise
           permission-contents: read
           permission-pull-requests: read
       - name: Discover new source commits and PR updates

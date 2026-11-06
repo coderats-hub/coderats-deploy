@@ -23,6 +23,12 @@ SERVICES = {
     "web": "web-coderats-base",
     "api": "api-coderats-base",
     "grader": "api-grader-coderats",
+    "infra": "coderats-base-infra",
+    "skills": "coderats-skills",
+    "rag": "coderats-rag",
+    "workspace": "coderats-workspace",
+    "education": "web-coderats-education",
+    "enterprise": "web-coderats-enterprise",
 }
 BRANCHES = ("develop", "main")
 SOURCE_OWNER = "coderats-hub"

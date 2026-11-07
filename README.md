@@ -113,3 +113,15 @@ The supported path is `deploy-private-dev.yml` in **this public repository**.
 
 The `validate-templates.yml` workflow uses the public hosted runner **only**
 to lint this public repository's own YAML and Bash scripts (no private source).
+
+## Source-branch automatic release proposal
+
+This repository also contains an **opt-in** central source-watcher design. See
+[Central source event orchestration](docs/central-auto-release.md). It detects
+private `develop` branch commits, validates private PRs and `main` commits,
+and can dispatch exact-SHA DEV releases **only after** the maintainer enables
+`CODERATS_AUTO_RELEASES_ENABLED` in the `dev` environment. This flag is not
+set by code changes; until enabled the watcher only records baselines.
+
+This is a deliberate change to the legacy per-release approval model and must
+not be enabled before local duplicate deploy triggers have been retired.

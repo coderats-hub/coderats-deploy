@@ -221,8 +221,12 @@ on:
           - api
           - get-worker
       confirmation:
-        description: Type DEPLOY_DEV to authorize this release
+        description: Type DEPLOY_DEV (manual) or AUTO_DEPLOY_DEV (central watcher)
         required: true
+        type: string
+      source_sha:
+        description: Exact private commit SHA for a branch-tracked release
+        required: false
         type: string
 
 permissions:
@@ -272,9 +276,19 @@ jobs:
           CONFIRMATION: ${{ (github.event_name == 'push' || github.event_name == 'schedule') && 'DEPLOY_DEV' || inputs.confirmation }}
         run: |
           set -euo pipefail
-          [[ "$CONFIRMATION" == "DEPLOY_DEV" ]] || {
-            echo "::error::Confirmation must be DEPLOY_DEV"; exit 1;
-          }
+          if [[ "$CONFIRMATION" == "AUTO_DEPLOY_DEV" ]]; then
+            [[ "${{ vars.CODERATS_AUTO_RELEASES_ENABLED }}" == "true" ]] || {
+              echo "::error::Central auto-release gate is disabled"; exit 1;
+            }
+            [[ "$SERVICE" == "web" || "$SERVICE" == "api" ]] || {
+              echo "::error::Automated release only supports web/api"; exit 1;
+            }
+            [[ "${{ inputs.source_sha }}" =~ ^[0-9a-f]{40}$ ]] || {
+              echo "::error::Automatic release requires a pinned 40-digit SHA"; exit 1;
+            }
+          elif [[ "$CONFIRMATION" != "DEPLOY_DEV" ]]; then
+            echo "::error::Confirmation must be DEPLOY_DEV or gated AUTO_DEPLOY_DEV"; exit 1
+          fi
           case "$SERVICE" in
             web)        repo=web-coderats-base; branch=develop ;;
             api)        repo=api-coderats-base; branch=develop ;;
@@ -314,7 +328,7 @@ jobs:
         if: env.DEPLOY_SERVICE != 'get-worker'
         with:
           repository: ${{ steps.target.outputs.repo }}
-          ref: ${{ steps.target.outputs.branch }}
+          ref: ${{ inputs.source_sha || steps.target.outputs.branch }}
           token: ${{ steps.private-token.outputs.token }}
           persist-credentials: false
           fetch-depth: 1
@@ -327,6 +341,9 @@ jobs:
           set -euo pipefail
           sha="$(git -C app-src rev-parse HEAD)"
           [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          if [[ -n "${{ inputs.source_sha }}" && "$sha" != "${{ inputs.source_sha }}" ]]; then
+            echo "::error::Source SHA differs from pinned SHA"; exit 1
+          fi
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
       - name: Prepare Node 24 for private web checks
@@ -581,11 +598,27 @@ jobs:
           az group show --name rg-coderats-base-dev --query name -o tsv >/dev/null
           [[ "$(az acr show -n crcoderatsbasedev9e0045 -g rg-coderats-base-dev --query loginServer -o tsv)" == "crcoderatsbasedev9e0045.azurecr.io" ]] || exit 1
 
+      - name: Reject an obsolete source commit before Azure login
+        if: inputs.confirmation == 'AUTO_DEPLOY_DEV'
+        env:
+          GH_TOKEN: ${{ steps.private-token.outputs.token }}
+          EXPECTED: ${{ steps.source.outputs.sha }}
+          PRIVATE_REPO: ${{ steps.target.outputs.repo }}
+        run: |
+          set -euo pipefail
+          latest="$(gh api "repos/$PRIVATE_REPO/branches/develop" --jq '.commit.sha')"
+          [[ "$latest" == "$EXPECTED" ]] || {
+            echo "::error::Source develop advanced; obsolete release stopped"; exit 1;
+          }
+
       - name: Build private image and publish DEV container revision
         if: env.DEPLOY_SERVICE == 'web' || env.DEPLOY_SERVICE == 'api'
         env:
           SERVICE: ${{ env.DEPLOY_SERVICE }}
           SOURCE_SHA: ${{ steps.source.outputs.sha }}
+          AUTO_RELEASE: ${{ inputs.confirmation == 'AUTO_DEPLOY_DEV' }}
+          GH_TOKEN: ${{ steps.private-token.outputs.token }}
+          PRIVATE_REPO: ${{ steps.target.outputs.repo }}
           WEB_APP: ${{ vars.AZURE_WEB_CONTAINER_APP }}
           API_ORIGIN: ${{ vars.NEXT_PUBLIC_API_URL }}
         run: |
@@ -621,6 +654,12 @@ jobs:
           # CORS allowlist while users migrate bookmarks to coderats.club.
           # Keep session SameSite=Lax: durable auth also requires that the API
           # be bound to api.coderats.club (same-site), not just cross-site CORS.
+          if [[ "$AUTO_RELEASE" == "true" ]]; then
+            latest="$(gh api "repos/$PRIVATE_REPO/branches/develop" --jq '.commit.sha')"
+            [[ "$latest" == "$SOURCE_SHA" ]] || {
+              echo "::error::Source advanced during build; no Azure release"; exit 1;
+            }
+          fi
           if [[ "$SERVICE" == "api" ]]; then
             az containerapp update -g "$rg" -n "$app" --image "$image" \
               --set-env-vars \

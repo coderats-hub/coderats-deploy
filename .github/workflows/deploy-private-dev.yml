@@ -1,3 +1,4 @@
+# 2026-11-08: Authorized DEV frontend deployment for available-first check-in commits (PR #171); web-coderats-base@develop 12dd9c5b353b283089c667a7d4c228c9a1cea85e. Central workflow validates source before release.
 # 2026-11-08: DEV web check-in commits release after final TS2345 fix; source develop 3e9e9ea57f3755cd50f681a52e725dd77068d15e.
 # 2026-11-08: DEV api check-in commits release after final vault fixture fix; source develop 899b5e0fdd5de170fbca54b1ce017e2e8d544e24.
 # 2026-11-08: Retry DEV web after check-in cache/loader regression test repair; source @develop d3709b1b1f33abe584c4c15e4e87b248e1d6ede4.

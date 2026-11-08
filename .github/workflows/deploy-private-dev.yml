@@ -1,3 +1,4 @@
+# 2026-11-08: Retry DEV api after check-in cache/loader regression test repair; source @develop db84eff2f610e2577571246bb1fa65bb338f2852.
 # 2026-11-08: DEV web release after merging compact check-in commits loading and force-refresh; web-coderats-base@develop a479696e9f1bddaaccca314aba73f390a775e70b (PR #166).
 # 2026-11-08: DEV API release after merging check-in commits branch parallelization and 45s cache; api-coderats-base@develop 53cfbe1154d6a375055542b9c9bf8090129adc2d (PR #224).
 # 2026-11-08: Retry DEV frontend after fixing four share/check-in test regressions; web-coderats-base@develop 64887eae016293a7f24383d4fe780125423007d6, PR #164; posts share links only.

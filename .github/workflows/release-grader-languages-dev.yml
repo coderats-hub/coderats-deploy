@@ -53,7 +53,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: coderats-hub/api-grader-coderats
-          ref: 6b897bfa7add314ef5766518974cb71a7e077249
+          ref: a126b16097ef9f9ec59becfe02da496193d38b40
           token: ${{ steps.token.outputs.token }}
           persist-credentials: false
           fetch-depth: 1
@@ -62,7 +62,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          [[ "$(git -C grader-src rev-parse HEAD)" == "6b897bfa7add314ef5766518974cb71a7e077249" ]] || exit 1
+          [[ "$(git -C grader-src rev-parse HEAD)" == "a126b16097ef9f9ec59becfe02da496193d38b40" ]] || exit 1
       - name: Prepare Python 3.12
         uses: actions/setup-python@v5
         with:
@@ -99,7 +99,7 @@ jobs:
           [[ "$(az group show -n "$rg" --query name -o tsv)" == "$rg" ]] || exit 1
           [[ "$(az acr show -g "$rg" -n "$registry" --query loginServer -o tsv)" == "$registry.azurecr.io" ]] || exit 1
           [[ "$(az containerapp show -g "$rg" -n "$app" --query name -o tsv)" == "$app" ]] || exit 1
-          image="$registry.azurecr.io/api-grader-coderats:6b897bfa7add314ef5766518974cb71a7e077249-$GITHUB_RUN_ID"
+          image="$registry.azurecr.io/api-grader-coderats:a126b16097ef9f9ec59becfe02da496193d38b40-$GITHUB_RUN_ID"
           az acr login -n "$registry" --output none
           if ! docker build -f grader-src/Dockerfile.cloud -t "$image" grader-src >"$RUNNER_TEMP/grader-build.log" 2>&1; then
             echo "::error::Grader Docker build failed. Private logs suppressed."
@@ -116,7 +116,7 @@ jobs:
             ready="$(az containerapp show -g "$rg" -n "$app" --query properties.latestReadyRevisionName -o tsv)"
             if [[ "$actual" == "$image" && -n "$latest" && "$latest" == "$ready" ]]; then
               echo "Grader DEV published and revision ready: $ready" >> "$GITHUB_STEP_SUMMARY"
-              echo "Private Grader SHA: 6b897bfa7add314ef5766518974cb71a7e077249" >> "$GITHUB_STEP_SUMMARY"
+              echo "Private Grader SHA: a126b16097ef9f9ec59becfe02da496193d38b40" >> "$GITHUB_STEP_SUMMARY"
               echo "Existing CodeRats colony language policies are normalized during Grader startup." >> "$GITHUB_STEP_SUMMARY"
               exit 0
             fi

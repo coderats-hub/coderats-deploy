@@ -1,3 +1,4 @@
+# 2026-11-08: DEV API release after merging check-in commits branch parallelization and 45s cache; api-coderats-base@develop 53cfbe1154d6a375055542b9c9bf8090129adc2d (PR #224).
 # 2026-11-08: Retry DEV frontend after fixing four share/check-in test regressions; web-coderats-base@develop 64887eae016293a7f24383d4fe780125423007d6, PR #164; posts share links only.
 # 2026-11-08: Authorized DEV frontend release of web-coderats-base@develop f3967b6fe9c44dc559791d8804d04a1191b8b699 (PRs #158, #162, #163): check-in posts share permanent links only; achievements and streaks use automatic cards; server-side achievement fix.
 # 2026-11-07: DEV web release of open dropdown styling and compact calendar hover improvements; web-coderats-base@develop 26a45d173153ed854130b94232b243499bf528a5.

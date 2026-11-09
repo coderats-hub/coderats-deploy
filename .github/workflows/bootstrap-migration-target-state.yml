@@ -49,7 +49,7 @@ jobs:
           container="tfstate"
 
           # One-time state resources, never touch old live DEV resources.
-          az group create -n "$group" -l eastus \
+          az group create --subscription "$TARGET_SUBSCRIPTION_ID" -n "$group" -l eastus \
             --tags project=coderats environment=migration-target \
                    purpose=terraform-state --only-show-errors -o none
           if az storage account show -n "$storage" -g "$group" \
@@ -63,7 +63,7 @@ jobs:
               echo "::error::Expected state account name unavailable; cannot use an unknown account."
               exit 1
             fi
-            az storage account create --name "$storage" -g "$group" -l eastus \
+            az storage account create --subscription "$TARGET_SUBSCRIPTION_ID" --name "$storage" -g "$group" -l eastus \
               --kind StorageV2 --sku Standard_LRS \
               --min-tls-version TLS1_2 --https-only true \
               --allow-blob-public-access false --allow-shared-key-access true \

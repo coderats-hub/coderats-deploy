@@ -1,0 +1,94 @@
+name: Diagnose migration-target Azure subscription (read-only)
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [".github/workflows/diagnose-migration-target-subscription.yml"]
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  inspect:
+    if: >-
+      github.repository == 'coderats-hub/coderats-deploy' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' ||
+       startsWith(github.event.head_commit.message, 'ci(migration): diagnose target subscription'))
+    environment: migration-target
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Sign in with target-only OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Inspect ARM subscription state, role permissions and providers
+        shell: bash
+        env:
+          SID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          TID: ${{ secrets.AZURE_TENANT_ID }}
+        run: |
+          set -euo pipefail
+          test "$SID" = "da3650a9-e291-43f1-ae4b-9dcc8ff84239"
+          test "$TID" = "1cf74c7e-fcd9-46f7-8a9d-e699d3529003"
+          test "$(az account show --query id -o tsv)" = "$SID"
+          test "$(az account show --query tenantId -o tsv)" = "$TID"
+          url="https://management.azure.com/subscriptions/$SID?api-version=2022-12-01"
+          if az rest --method get --url "$url" --output json --only-show-errors > /tmp/sub-check.json 2>/dev/null; then
+            python3 - <<'PY'
+          import json,os
+          x=json.load(open('/tmp/sub-check.json'))
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:
+              f.write("### Target subscription ARM diagnosis\n")
+              f.write("- Direct ARM GET on subscription: **passed**\n")
+              f.write("- Subscription state: **"+str(x.get("state","unknown"))+"**\n")
+              f.write("- Subscription name: **"+str(x.get("displayName","unknown"))+"**\n")
+          PY
+          else
+            echo "- Direct ARM GET on subscription: **failed**" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          for namespace in Microsoft.Resources Microsoft.Storage Microsoft.ContainerRegistry Microsoft.App Microsoft.DBforPostgreSQL Microsoft.KeyVault; do
+            if val="$(az provider show -n "$namespace" --subscription "$SID" --query registrationState -o tsv --only-show-errors 2>/dev/null)"; then
+              echo "- $namespace registration: ${val}" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "- $namespace registration: unavailable" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
+
+          permurl="https://management.azure.com/subscriptions/$SID/providers/Microsoft.Authorization/permissions?api-version=2015-07-01"
+          if az rest --method get --url "$permurl" --output json --only-show-errors > /tmp/permissions.json 2>/dev/null; then
+            python3 - <<'PY'
+          import json,os,fnmatch
+          data=json.load(open('/tmp/permissions.json'))
+          target='Microsoft.Resources/subscriptions/resourceGroups/write'
+          allowed=False
+          for entry in data.get('value',[]):
+              a=entry.get('actions') or []
+              n=entry.get('notActions') or []
+              if any(fnmatch.fnmatchcase(target.lower(),x.lower()) for x in a) and not any(fnmatch.fnmatchcase(target.lower(),x.lower()) for x in n):
+                  allowed=True
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:
+              f.write("- Principal ARM permission to create Resource Groups: **" + ("reported allowed" if allowed else "not found") + "**\n")
+          PY
+          else
+            echo "- Effective permissions API: unavailable" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          if az group list --subscription "$SID" --query 'length(@)' -o tsv --only-show-errors >/dev/null; then
+            echo "- ARM list resource groups: **passed**" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "- ARM list resource groups: **failed**" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "- All operations: read-only" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Logout and delete temporary metadata
+        if: always()
+        run: |
+          rm -f /tmp/sub-check.json /tmp/permissions.json
+          az logout --output none >/dev/null 2>&1 || true

@@ -86,6 +86,7 @@ jobs:
             echo "- ARM list resource groups: **failed**" >> "$GITHUB_STEP_SUMMARY"
           fi
           echo "- All operations: read-only" >> "$GITHUB_STEP_SUMMARY"
+          cat "$GITHUB_STEP_SUMMARY"
 
       - name: Logout and delete temporary metadata
         if: always()

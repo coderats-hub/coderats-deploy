@@ -49,9 +49,12 @@ jobs:
           container="tfstate"
 
           # One-time state resources, never touch old live DEV resources.
-          az group create --subscription "$TARGET_SUBSCRIPTION_ID" -n "$group" -l eastus \
-            --tags project=coderats environment=migration-target \
-                   purpose=terraform-state --only-show-errors -o none
+          # Direct ARM PUT distinguishes Azure CLI SDK subscription resolution
+          # from a backend/billing authorization error after directory change.
+          az rest --method put \
+            --url "https://management.azure.com/subscriptions/$TARGET_SUBSCRIPTION_ID/resourcegroups/$group?api-version=2021-04-01" \
+            --body '{"location":"eastus","tags":{"project":"coderats","environment":"migration-target","purpose":"terraform-state"}}' \
+            --only-show-errors -o none
           if az storage account show -n "$storage" -g "$group" \
              --query name -o tsv --only-show-errors >/dev/null 2>&1; then
             echo "Dedicated state storage already exists in the expected resource group."

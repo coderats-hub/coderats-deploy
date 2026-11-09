@@ -22,7 +22,7 @@ jobs:
       github.repository == 'coderats-hub/coderats-deploy' &&
       github.ref == 'refs/heads/main' &&
       (github.event_name == 'workflow_dispatch' ||
-       github.event.head_commit.message == 'ci(inventory): collect encrypted Azure metadata')
+       startsWith(github.event.head_commit.message, 'ci(inventory): collect encrypted Azure metadata'))
     environment: dev
     runs-on: ubuntu-latest
     timeout-minutes: 35

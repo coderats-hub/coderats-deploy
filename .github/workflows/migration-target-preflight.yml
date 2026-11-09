@@ -1,0 +1,113 @@
+name: CodeRats target Terraform preflight (no Azure changes)
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [".github/workflows/migration-target-preflight.yml"]
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  preflight:
+    if: >-
+      github.repository == 'coderats-hub/coderats-deploy' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' ||
+       startsWith(github.event.head_commit.message, 'ci(migration): preflight target foundation'))
+    environment: migration-target
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check isolated destination and private-source access configuration
+        shell: bash
+        env:
+          TARGET_SUBSCRIPTION: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          TARGET_TENANT: ${{ secrets.AZURE_TENANT_ID }}
+          SOURCE_APP_ID: ${{ vars.CODERATS_DEPLOY_APP_ID }}
+          SOURCE_APP_KEY: ${{ secrets.CODERATS_DEPLOY_APP_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          test "${TARGET_SUBSCRIPTION}" = "da3650a9-e291-43f1-ae4b-9dcc8ff84239" || exit 1
+          test "${TARGET_TENANT}" = "1cf74c7e-fcd9-46f7-8a9d-e699d3529003" || exit 1
+          if [[ -z "${SOURCE_APP_ID:-}" || -z "${SOURCE_APP_KEY:-}" ]]; then
+            echo "::error::migration-target cannot access private GitHub App checkout credentials. Provide CODERATS_DEPLOY_APP_ID variable and CODERATS_DEPLOY_APP_PRIVATE_KEY secret scoped to migration-target (do not change dev)."
+            exit 1
+          fi
+          echo "Isolated destination and private-source GitHub App credentials are configured."
+
+      - name: Issue a private-source scoped read-only GitHub App token
+        id: source-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.CODERATS_DEPLOY_APP_ID }}
+          private-key: ${{ secrets.CODERATS_DEPLOY_APP_PRIVATE_KEY }}
+          owner: coderats-hub
+          repositories: coderats-base-infra
+          permission-contents: read
+
+      - name: Fetch reviewed private Terraform without publishing source
+        uses: actions/checkout@v4
+        with:
+          repository: coderats-hub/coderats-base-infra
+          ref: f204ff8369f2bf38ec747780ba25912fdbfdd533
+          token: ${{ steps.source-token.outputs.token }}
+          path: private-infra
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Validate exact private source SHA and Terraform syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C private-infra rev-parse HEAD)" = "f204ff8369f2bf38ec747780ba25912fdbfdd533"
+          test -e private-infra/migration-target/terraform/main.tf
+          echo "Reviewed private source pinned and available."
+
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "1.16.0"
+
+      - name: Validate Terraform offline (no Azure API mutations)
+        shell: bash
+        working-directory: private-infra/migration-target/terraform
+        run: |
+          set -euo pipefail
+          terraform fmt -check -recursive >/dev/null
+          terraform init -backend=false -input=false -no-color >/dev/null
+          terraform validate -no-color >/dev/null
+          echo "Terraform formatting and validation passed."
+
+      - name: OIDC sign-in to the NEW Azure subscription
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Verify target ARM is empty and inspect service providers
+        shell: bash
+        env:
+          SID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          set -euo pipefail
+          test "$(az account show --query id -o tsv)" = "${SID}" || exit 1
+          count="$(az resource list --subscription "${SID}" --query 'length(@)' -o tsv --only-show-errors)"
+          groups="$(az group list --subscription "${SID}" --query 'length(@)' -o tsv --only-show-errors)"
+          {
+            echo "### Migration target preflight"
+            echo "- Terraform file formatting and validation: PASS"
+            echo "- Private source checkout using GitHub App: PASS"
+            echo "- Target subscription and tenant: PASS"
+            echo "- Resource groups: ${groups}"
+            echo "- Azure ARM resources: ${count}"
+            echo "- No Azure resource creation, modification or deletion was performed."
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: |
+          rm -rf private-infra
+          az logout --output none >/dev/null 2>&1 || true

@@ -1,3 +1,4 @@
+# 2026-11-09: Authorized DEV frontend release for Google search homepage image-preview restriction (web PR #176); web-coderats-base@develop db35f8c2f5fb104a47afaeaa60dad9e6e709d193.
 # 2026-11-08: Authorized DEV frontend deployment for available-first check-in commits (PR #171); web-coderats-base@develop 12dd9c5b353b283089c667a7d4c228c9a1cea85e. Central workflow validates source before release.
 # 2026-11-08: DEV web check-in commits release after final TS2345 fix; source develop 3e9e9ea57f3755cd50f681a52e725dd77068d15e.
 # 2026-11-08: DEV api check-in commits release after final vault fixture fix; source develop 899b5e0fdd5de170fbca54b1ce017e2e8d544e24.

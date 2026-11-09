@@ -1,0 +1,103 @@
+name: Bootstrap isolated CodeRats target Terraform state
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [".github/workflows/bootstrap-migration-target-state.yml"]
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: coderats-migration-target-state-bootstrap
+  cancel-in-progress: false
+
+jobs:
+  bootstrap:
+    name: Provision storage for new-subscription Terraform state only
+    if: >-
+      github.repository == 'coderats-hub/coderats-deploy' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' ||
+       startsWith(github.event.head_commit.message, 'ci(migration): bootstrap target state only'))
+    runs-on: ubuntu-latest
+    environment: migration-target
+    timeout-minutes: 20
+    steps:
+      - name: Authenticate ONLY to migration-target tenant/subscription
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Verify exact target and create encrypted Terraform backend
+        shell: bash
+        env:
+          TARGET_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          TARGET_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+        run: |
+          set -euo pipefail
+          test "${TARGET_SUBSCRIPTION_ID}" = "da3650a9-e291-43f1-ae4b-9dcc8ff84239"
+          test "${TARGET_TENANT_ID}" = "1cf74c7e-fcd9-46f7-8a9d-e699d3529003"
+          test "$(az account show --query id -o tsv)" = "${TARGET_SUBSCRIPTION_ID}"
+          test "$(az account show --query tenantId -o tsv)" = "${TARGET_TENANT_ID}"
+          group="rg-coderats-migration-state"
+          storage="stcrtf8ff84239"
+          container="tfstate"
+
+          # One-time state resources, never touch old live DEV resources.
+          az group create -n "$group" -l eastus \
+            --tags project=coderats environment=migration-target \
+                   purpose=terraform-state --only-show-errors -o none
+          if az storage account show -n "$storage" -g "$group" \
+             --query name -o tsv --only-show-errors >/dev/null 2>&1; then
+            echo "Dedicated state storage already exists in the expected resource group."
+          else
+            # A globally reserved name held by another subscription must fail closed.
+            available="$(az storage account check-name -n "$storage" \
+              --query nameAvailable -o tsv --only-show-errors)"
+            if [[ "$available" != "true" && "$available" != "True" ]]; then
+              echo "::error::Expected state account name unavailable; cannot use an unknown account."
+              exit 1
+            fi
+            az storage account create --name "$storage" -g "$group" -l eastus \
+              --kind StorageV2 --sku Standard_LRS \
+              --min-tls-version TLS1_2 --https-only true \
+              --allow-blob-public-access false --allow-shared-key-access true \
+              --tags project=coderats environment=migration-target \
+                     purpose=terraform-state \
+              --only-show-errors -o none
+          fi
+
+          id="$(az storage account show -n "$storage" -g "$group" --query id -o tsv)"
+          [[ "$id" == "/subscriptions/${TARGET_SUBSCRIPTION_ID}/resourceGroups/$group/"* ]] || {
+            echo "::error::State storage is not in the approved target subscription/resource group."
+            exit 1
+          }
+
+          # Contributor can list keys, but cannot assign RBAC; avoid public artifacts.
+          account_key="$(az storage account keys list -n "$storage" -g "$group" \
+            --query '[0].value' -o tsv --only-show-errors)"
+          [[ -n "$account_key" ]] || exit 1
+          echo "::add-mask::$account_key"
+          az storage container create --account-name "$storage" \
+            --account-key "$account_key" -n "$container" --only-show-errors -o none
+          unset account_key
+          {
+            echo "### CodeRats migration: dedicated remote Terraform state"
+            echo "- Azure subscription: new migration-target verified"
+            echo "- Resource group: $group"
+            echo "- Storage account: $storage"
+            echo "- Blob container: $container (private)"
+            echo "- Azure storage at-rest encryption: enabled by service default"
+            echo "- Old CodeRats subscription: **not accessed**"
+            echo "- No application resources, PostgreSQL, Terraform plan/apply or deployment."
+            echo "- Storage account uses shared key until scoped state-data RBAC is configured; rotate and disable when OIDC data-plane access is ready."
+          } >> "${GITHUB_STEP_SUMMARY}"
+          echo "Target-only Terraform state foundation ready."
+      - name: Logout
+        if: always()
+        run: az logout --output none >/dev/null 2>&1 || true

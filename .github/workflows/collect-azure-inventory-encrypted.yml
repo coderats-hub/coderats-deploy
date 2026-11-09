@@ -1,0 +1,120 @@
+name: Collect encrypted Azure migration inventory
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/collect-azure-inventory-encrypted.yml
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: coderats-encrypted-migration-inventory
+  cancel-in-progress: false
+
+jobs:
+  inventory:
+    name: Read-only Azure inventory with encrypted artifact
+    if: >-
+      github.repository == 'coderats-hub/coderats-deploy' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' ||
+       github.event.head_commit.message == 'ci(inventory): collect encrypted Azure metadata')
+    environment: dev
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+
+    steps:
+      - name: Checkout public workflow and encryption certificate
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          path: public-config
+
+      - name: Obtain read-only token for private infrastructure collector
+        id: private-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.CODERATS_DEPLOY_APP_ID }}
+          private-key: ${{ secrets.CODERATS_DEPLOY_APP_PRIVATE_KEY }}
+          owner: coderats-hub
+          repositories: coderats-base-infra
+          permission-contents: read
+
+      - name: Checkout pinned PRIVATE, reviewed read-only collector
+        uses: actions/checkout@v4
+        with:
+          repository: coderats-hub/coderats-base-infra
+          ref: b7816a58154d7e5224c45449f33e753f36f0f00c
+          token: ${{ steps.private-token.outputs.token }}
+          persist-credentials: false
+          fetch-depth: 1
+          path: infra-source
+
+      - name: Verify immutable collector SHA and script syntax
+        run: |
+          set -euo pipefail
+          test "$(git -C infra-source rev-parse HEAD)" = "b7816a58154d7e5224c45449f33e753f36f0f00c"
+          python3 -m py_compile infra-source/scripts/azure-migration/inventory.py
+          openssl x509 -in public-config/scripts/azure-inventory-public-cert.pem -noout > /dev/null
+
+      - name: Login to existing DEV Azure subscription via OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Collect filtered Azure ARM metadata and encrypt it before artifact creation
+        id: collect
+        shell: bash
+        env:
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          set -euo pipefail
+          umask 077
+          [[ "$(az account show --query id -o tsv)" == "$AZURE_SUBSCRIPTION_ID" ]] || {
+            echo "::error::Azure subscription mismatch"; exit 1;
+          }
+          mkdir -p "$RUNNER_TEMP/azure-private"
+          if ! python3 infra-source/scripts/azure-migration/inventory.py \
+              "$RUNNER_TEMP/azure-private/inventory" \
+              >"$RUNNER_TEMP/azure-private/collector.log" 2>&1; then
+            echo "::error::Azure private inventory could not finish. Details intentionally suppressed."
+            exit 1
+          fi
+          tar -czf "$RUNNER_TEMP/azure-private/inventory.tar.gz" \
+            -C "$RUNNER_TEMP/azure-private" inventory
+          mkdir -p encrypted-artifact
+          openssl cms -encrypt -binary -aes256 \
+            -in "$RUNNER_TEMP/azure-private/inventory.tar.gz" \
+            -out encrypted-artifact/azure-inventory.cms \
+            -outform DER public-config/scripts/azure-inventory-public-cert.pem \
+            >/dev/null 2>&1
+          [[ -s encrypted-artifact/azure-inventory.cms ]] || exit 1
+          sha256sum encrypted-artifact/azure-inventory.cms | awk '{ print $1 "  azure-inventory.cms" }' \
+            > encrypted-artifact/SHA256SUMS
+          echo "encrypted=true" >> "$GITHUB_OUTPUT"
+          echo "### Encrypted Azure inventory" >> "$GITHUB_STEP_SUMMARY"
+          echo "Only encrypted resource metadata is uploaded. No keys, plaintext inventory, backups or private code are published." >> "$GITHUB_STEP_SUMMARY"
+          echo "Azure resource operations were read-only. An encryption certificate with locally held private key was used." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish ciphertext only (public artifact, private key is never in GitHub)
+        if: success() && steps.collect.outputs.encrypted == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: encrypted-azure-inventory-${{ github.run_id }}
+          path: encrypted-artifact/
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+      - name: Delete ephemeral inventory and logout
+        if: always()
+        shell: bash
+        run: |
+          rm -rf "$RUNNER_TEMP/azure-private" encrypted-artifact infra-source public-config
+          az logout --output none >/dev/null 2>&1 || true

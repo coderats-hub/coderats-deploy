@@ -1,0 +1,95 @@
+name: Verify CodeRats migration-target Azure OIDC (read only)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/verify-migration-target-oidc.yml"
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: coderats-migration-target-oidc-check
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Authenticate and inspect target subscription (no writes)
+    if: >-
+      github.repository == 'coderats-hub/coderats-deploy' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'push' &&
+        startsWith(github.event.head_commit.message, 'ci(migration): verify target Azure OIDC')))
+    environment: migration-target
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Verify environment secrets target the intended Azure subscription
+        shell: bash
+        env:
+          TARGET_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          TARGET_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          TARGET_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          set -euo pipefail
+          for key in TARGET_CLIENT_ID TARGET_TENANT_ID TARGET_SUBSCRIPTION_ID; do
+            if [[ -z "${!key:-}" ]]; then
+              echo "::error::Missing GitHub Environment credential (client / tenant / subscription)."
+              exit 1
+            fi
+          done
+          [[ "${TARGET_SUBSCRIPTION_ID,,}" == *8ff84239 ]] || {
+            echo "::error::Not the intended migration target subscription."
+            exit 1
+          }
+          [[ "${TARGET_TENANT_ID,,}" == *d3529003 ]] || {
+            echo "::error::Not the intended migration target tenant."
+            exit 1
+          }
+          echo "Required migration-target environment credentials are present."
+
+      - name: Sign in using GitHub OIDC without an application password
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Confirm tenant, subscription and read-only ARM access
+        shell: bash
+        env:
+          EXPECTED_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          EXPECTED_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+        run: |
+          set -euo pipefail
+          actual_subscription="$(az account show --query id -o tsv)"
+          actual_tenant="$(az account show --query tenantId -o tsv)"
+          [[ "${actual_subscription,,}" == "${EXPECTED_SUBSCRIPTION_ID,,}" ]] || {
+            echo "::error::Azure authentication selected the wrong subscription."
+            exit 1
+          }
+          [[ "${actual_tenant,,}" == "${EXPECTED_TENANT_ID,,}" ]] || {
+            echo "::error::Azure authentication selected the wrong tenant."
+            exit 1
+          }
+          groups="$(az group list --subscription "${EXPECTED_SUBSCRIPTION_ID}" --query 'length(@)' -o tsv --only-show-errors)"
+          resources="$(az resource list --subscription "${EXPECTED_SUBSCRIPTION_ID}" --query 'length(@)' -o tsv --only-show-errors)"
+          {
+            echo "### CodeRats migration-target: read-only Azure verification"
+            echo "- GitHub OIDC authentication: **passed**"
+            echo "- Intended Azure subscription and tenant: **confirmed**"
+            echo "- Read-only Azure Resource Manager access: **passed**"
+            echo "- Resource groups found in destination: **${groups}**"
+            echo "- ARM resources found in destination: **${resources}**"
+            echo "- No resources created, modified or deleted; no Terraform executed."
+          } >> "${GITHUB_STEP_SUMMARY}"
+          echo "OIDC and read-only access checks passed. Resource-group count: ${groups}; ARM resource count: ${resources}."
+
+      - name: End Azure session
+        if: always()
+        shell: bash
+        run: az logout --output none >/dev/null 2>&1 || true

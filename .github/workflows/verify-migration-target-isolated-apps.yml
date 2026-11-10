@@ -127,10 +127,15 @@ jobs:
           set -euo pipefail
           [[ "$SID" == "da3650a9-e291-43f1-ae4b-9dcc8ff84239" ]]
           az postgres flexible-server show --subscription "$SID" -g "$RG" -n "$DB" \
-            --query '{name:name,state:state,version:version,publicAccess:network.publicNetworkAccess}' \
+            --query '{name:name,state:state,version:version,publicAccess:network.publicNetworkAccess,delegatedSubnet:network.delegatedSubnetResourceId,privateDns:network.privateDnsZoneArmResourceId}' \
             -o json --only-show-errors > "$RUNNER_TEMP/database-private.json"
-          az postgres flexible-server firewall-rule list --subscription "$SID" -g "$RG" -n "$DB" \
-            --only-show-errors -o json > "$RUNNER_TEMP/firewall-private.json" 2>/dev/null || echo '[]' > "$RUNNER_TEMP/firewall-private.json"
+          if az postgres flexible-server firewall-rule list --subscription "$SID" -g "$RG" -n "$DB" \
+              --only-show-errors -o json > "$RUNNER_TEMP/firewall-private.json" 2>/dev/null; then
+            echo "FIREWALL_QUERY_OK=true" >> "$GITHUB_ENV"
+          else
+            echo "FIREWALL_QUERY_OK=false" >> "$GITHUB_ENV"
+            echo '[]' > "$RUNNER_TEMP/firewall-private.json"
+          fi
           az containerapp job list --subscription "$SID" -g "$RG" \
             --only-show-errors -o json > "$RUNNER_TEMP/target-jobs-private.json" 2>/dev/null || echo '[]' > "$RUNNER_TEMP/target-jobs-private.json"
           python3 - <<'PY'
@@ -141,15 +146,19 @@ jobs:
           jobs=json.load(open(os.path.join(root,"target-jobs-private.json")))
           fw=fw if isinstance(fw,list) else []
           jobs=jobs if isinstance(jobs,list) else []
-          wide=any(f.get("startIpAddress")=="0.0.0.0" and f.get("endIpAddress")=="0.0.0.0" for f in fw if isinstance(f,dict))
+          queried=os.environ.get("FIREWALL_QUERY_OK")=="true"
+          wide=any(f.get("startIpAddress")=="0.0.0.0" and f.get("endIpAddress")=="0.0.0.0" for f in fw if isinstance(f,dict)) if queried else None
           with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:
               f.write("### Database and worker migration readiness (no writes)\n")
               f.write("- Target PostgreSQL provisioned: "+str(db.get("name")=="psql-coderatsmig-c26m0911")+"\n")
               f.write("- PostgreSQL state: "+str(db.get("state") if db.get("state") in ("Ready","Starting","Stopped","Updating") else "other")+"\n")
               f.write("- PostgreSQL major version 16: "+str(str(db.get("version","")).startswith("16"))+"\n")
               f.write("- Public network access: "+str(db.get("publicAccess") if db.get("publicAccess") in ("Enabled","Disabled") else "other")+"\n")
-              f.write("- Firewall rule count: "+str(len(fw))+"\n")
-              f.write("- Broad Azure-services firewall rule 0.0.0.0 present: "+str(wide)+" (security review required before data migration)\n")
+              f.write("- Private delegated subnet configured: "+str(bool(db.get("delegatedSubnet")))+"\n")
+              f.write("- Private DNS zone configured: "+str(bool(db.get("privateDns")))+"\n")
+              f.write("- Firewall query succeeded: "+str(queried)+"\n")
+              f.write("- Firewall rule count: "+(str(len(fw)) if queried else "unavailable")+"\n")
+              f.write("- Broad Azure-services firewall rule 0.0.0.0 present: "+(str(wide) if queried else "unverified")+" (security review before data migration)\n")
               f.write("- Container Apps Jobs currently registered in target RG: "+str(len(jobs))+"\n")
               f.write("- Real database tables, rows, credentials and user data were NOT read\n")
           PY

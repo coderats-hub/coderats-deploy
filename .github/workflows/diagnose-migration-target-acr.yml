@@ -1,0 +1,57 @@
+name: Probe destination Azure Container Registry build (public hello-world only)
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [".github/workflows/diagnose-migration-target-acr.yml"]
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  acr-probe:
+    if: >-
+      github.repository == 'coderats-hub/coderats-deploy' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' ||
+       startsWith(github.event.head_commit.message, 'ci(migration): diagnose ACR build'))
+    runs-on: ubuntu-latest
+    environment: migration-target
+    timeout-minutes: 15
+    steps:
+      - name: Sign in to destination Azure only
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Verify target and run public hello-world ACR task
+        shell: bash
+        env:
+          SID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          TID: ${{ secrets.AZURE_TENANT_ID }}
+        run: |
+          set -euo pipefail
+          [[ "$SID" == "da3650a9-e291-43f1-ae4b-9dcc8ff84239" && "$TID" == "1cf74c7e-fcd9-46f7-8a9d-e699d3529003" ]]
+          [[ "$(az account show --query id -o tsv)" == "$SID" ]]
+          mkdir -p "$RUNNER_TEMP/acr-probe"
+          printf 'FROM mcr.microsoft.com/hello-world\n' > "$RUNNER_TEMP/acr-probe/Dockerfile"
+          echo "Starting public, one-line Dockerfile build using destination ACR Tasks."
+          if az acr build --registry crcoderatsmigc26m0911 --subscription "$SID" \
+            --image "coderats-hello-probe:check-$GITHUB_RUN_ID" \
+            --file Dockerfile --no-logs \
+            "$RUNNER_TEMP/acr-probe" > "$RUNNER_TEMP/acr-probe-output.log" 2>&1; then
+            echo "ACR Tasks build succeeded for a public image."
+            echo "- ACR public-image quick-build: PASS" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::error::Destination ACR public-image build failed. No private source or credentials used in this probe."
+            # Only this inline public Dockerfile is used, so raw Azure errors are safe to print.
+            tail -n 25 "$RUNNER_TEMP/acr-probe-output.log"
+            echo "- ACR public-image quick-build: FAIL" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+      - name: Cleanup
+        if: always()
+        run: |
+          rm -rf "$RUNNER_TEMP/acr-probe" "$RUNNER_TEMP/acr-probe-output.log"
+          az logout --output none >/dev/null 2>&1 || true

@@ -498,6 +498,55 @@ jobs:
           rm -f "$RUNNER_TEMP/web-runtime.json" "$RUNNER_TEMP/web-revisions.json" \
             "$RUNNER_TEMP/web-replicas.json" "$RUNNER_TEMP/web-system-internal.log" "$RUNNER_TEMP/web-console-internal.log"
 
+      - name: Diagnose isolated Web to API proxy with numeric HTTP status and safe exception classifications
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SID" == "da3650a9-e291-43f1-ae4b-9dcc8ff84239" ]]
+          fqdn="$(az containerapp show --subscription "$SID" -g "$RG" -n "$WEB" \
+            --query properties.configuration.ingress.fqdn -o tsv --only-show-errors)"
+          [[ "$fqdn" == *.azurecontainerapps.io ]]
+          web="https://$fqdn"
+          echo "### Web to API proxy numeric checks" >> "$GITHUB_STEP_SUMMARY"
+          for path in /health / /api/v1/auth/me; do
+            status="$(curl -sS -L -o /dev/null --connect-timeout 7 --max-time 20 \
+              -w '%{http_code}' "$web$path" 2>/dev/null || true)"
+            [[ "$status" =~ ^[0-9]{3}$ ]] || status="unavailable"
+            echo "- $path HTTP=$status" >> "$GITHUB_STEP_SUMMARY"
+          done
+          for app in "$WEB" "$API"; do
+            file="$RUNNER_TEMP/isolated-proxy-$(basename "$app").log"
+            if az containerapp logs show --subscription "$SID" -g "$RG" -n "$app" \
+              --type console --tail 160 --only-show-errors > "$file" 2>&1; then
+              result="available"
+            else
+              result="unavailable"
+            fi
+            LOG_APP="$app" LOG_RESULT="$result" LOG_FILE="$file" python3 - <<'PY'
+          import re,os
+          s=open(os.environ["LOG_FILE"],errors="replace").read().lower()
+          classes={
+            "request-forwarding":r"proxy error|error proxying|fetch failed|failed to proxy|rewrit",
+            "network-dns":r"enotfound|eai_again|name or service not known|getaddrinfo",
+            "network-connect":r"econnrefused|econnreset|etimedout|connect timeout|socket hang up|und_err_connect",
+            "tls-protocol":r"eproto|ssl routines|wrong version number|certificate verify",
+            "spring-500":r"internalservererror|http 500|status=500|servlet.*exception",
+            "spring-security-401":r"unauthorized|authenticationentrypoint|status=401",
+            "runtime-error":r"uncaught|typeerror:|referenceerror:|error \[|exception",
+            "healthy-startup":r"ready in [0-9]|started .*application|next.js|tomcat started",
+          }
+          name="Web" if os.environ["LOG_APP"].endswith("-web-c26m0911") else "API"
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:
+              f.write("### "+name+" console diagnostic classes\n")
+              f.write("- Logs query="+os.environ["LOG_RESULT"]+"\n")
+              for k,p in classes.items():
+                  n=len(re.findall(p,s))
+                  if n: f.write("- "+k+"="+str(min(n,500))+"\n")
+              f.write("- Raw console logs withheld\n")
+          PY
+          done
+          cat "$GITHUB_STEP_SUMMARY"
+          rm -f "$RUNNER_TEMP/isolated-proxy-"*.log
       - name: Print safe summary
         if: always()
         shell: bash

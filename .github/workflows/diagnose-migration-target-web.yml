@@ -423,7 +423,7 @@ jobs:
           with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:
               f.write("### Web revision / startup diagnostics\n")
               f.write("- ARM Web running="+safe(j.get("running"))+", provisioning="+safe(j.get("provisioning"))+"\n")
-              f.write("- Declared image tag="+("dnsfix" if str(j.get("image","")).endswith(":mirror-dnsfix-db35f8c2f5fb") else ("original" if str(j.get("image","")).endswith(":mirror-db35f8c2f5fb") else "other"))+"\n")
+              f.write("- Declared image tag="+("internal" if str(j.get("image","")).endswith(":mirror-internal-fqdn-db35f8c2f5fb") else ("dnsfix" if str(j.get("image","")).endswith(":mirror-dnsfix-db35f8c2f5fb") else ("original" if str(j.get("image","")).endswith(":mirror-db35f8c2f5fb") else "other")))+"\n")
               f.write("- ARM latest revision present="+str(bool(j.get("latest")))+"\n")
               f.write("- ARM latest ready revision present="+str(bool(j.get("ready")))+"\n")
               ingress=j.get("ingress") or {}
@@ -434,7 +434,7 @@ jobs:
                       p=r.get("properties") or {}
                       containers=(p.get("template") or {}).get("containers") or []
                       im=containers[0].get("image","") if containers else ""
-                      tag=("dnsfix" if im.endswith(":mirror-dnsfix-db35f8c2f5fb") else ("original" if im.endswith(":mirror-db35f8c2f5fb") else "unavailable"))
+                      tag=("internal" if im.endswith(":mirror-internal-fqdn-db35f8c2f5fb") else ("dnsfix" if im.endswith(":mirror-dnsfix-db35f8c2f5fb") else ("original" if im.endswith(":mirror-db35f8c2f5fb") else "unavailable")))
                       f.write("  - revision imageTag="+tag+", running="+safe(p.get("runningState"))+
                               ", health="+safe(p.get("healthState"))+
                               ", provisioning="+safe(p.get("provisioningState"))+
@@ -574,7 +574,9 @@ jobs:
               f.write("### Web DNS fix after staged Azure image update\n")
               f.write("- Web container image is DNS-fix version: "+str(image==expected)+"\n")
               f.write("- Web provisioning: "+str(v.get("provisioning") if v.get("provisioning") in ("Succeeded","Failed","InProgress") else "other")+"\n")
-              f.write("- Runtime WebSocket API_PROXY_TARGET uses current internal API FQDN: "+str(target=="http://"+os.environ["API_FQDN"])+"\n")
+              suffix=os.environ["API_FQDN"].split(".",1)[1] if "." in os.environ["API_FQDN"] else ""
+              expected="http://ca-coderatsmig-api-c26m0911.internal."+suffix
+              f.write("- Runtime API_PROXY_TARGET uses documented private FQDN: "+str(target==expected)+"\n")
               f.write("- Runtime proxy value and container environment are not printed\n")
           PY
           for path in / /health /api/v1/auth/me; do
@@ -686,6 +688,49 @@ jobs:
           PY
           cat "$GITHUB_STEP_SUMMARY"
           rm -f "$errfile" "$probe"
+
+      - name: Inspect new image revision health and targeted proxy DNS categories (read-only)
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SID" == "da3650a9-e291-43f1-ae4b-9dcc8ff84239" ]]
+          az containerapp revision list --subscription "$SID" -g "$RG" -n "$WEB" \
+            --only-show-errors -o json > "$RUNNER_TEMP/mirror-private-dns-revisions.json"
+          python3 - <<'PY'
+          import json,os
+          x=json.load(open(os.path.join(os.environ["RUNNER_TEMP"],"mirror-private-dns-revisions.json")))
+          tag=":mirror-internal-fqdn-db35f8c2f5fb"
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:
+              f.write("### Target Web revision with private API DNS image\n")
+              for r in x if isinstance(x,list) else []:
+                  p=r.get("properties") or {}
+                  cs=(p.get("template") or {}).get("containers") or []
+                  if not cs or not str(cs[0].get("image","")).endswith(tag): continue
+                  f.write("- New image revision: active="+str(p.get("active") is True)+
+                          ", running="+str(p.get("runningState"))+
+                          ", health="+str(p.get("healthState"))+
+                          ", provisioning="+str(p.get("provisioningState"))+"\n")
+          PY
+          logs="$RUNNER_TEMP/mirror-private-dns-console-private.log"
+          if az containerapp logs show --subscription "$SID" -g "$RG" -n "$WEB" \
+              --type console --tail 160 --only-show-errors > "$logs" 2>&1; then
+            LOGFILE="$logs" python3 - <<'PY'
+          import os,re
+          msg=open(os.environ["LOGFILE"],errors="replace").read().lower()
+          app="ca-coderatsmig-api-c26m0911"
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:
+              f.write("### Safe DNS hostname classifications in recent Web logs\n")
+              f.write("- api.internal private hostname occurrences="+str(msg.count(app+".internal."))+"\n")
+              f.write("- API hostname mentions (all forms)="+str(msg.count(app))+"\n")
+              f.write("- ENOTFOUND occurrences="+str(msg.count("enotfound"))+"\n")
+              f.write("- EAI_AGAIN occurrences="+str(msg.count("eai_again"))+"\n")
+              f.write("- Raw logs withheld\n")
+          PY
+          else
+            echo "- Latest Web console log query unavailable" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          cat "$GITHUB_STEP_SUMMARY"
+          rm -f "$RUNNER_TEMP/mirror-private-dns-revisions.json" "$logs"
 
       - name: Print safe summary
         if: always()

@@ -25,7 +25,7 @@ jobs:
       github.repository == 'coderats-hub/coderats-deploy' &&
       github.ref == 'refs/heads/main' &&
       ((github.event_name == 'workflow_dispatch' && inputs.confirmation == 'CREATE_TRUE_STANDARD_CAE') ||
-       (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'ci(migration): create verified workloadprofiles cae once')))
+       (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'ci(migration): retry verified workloadprofiles with azure monitor once')))
     runs-on: ubuntu-latest
     environment: migration-target
     timeout-minutes: 40
@@ -97,7 +97,7 @@ jobs:
               'tags':{'project':'coderats','environment':'migration-target','purpose':'standard-workloadprofiles'},
               'properties':{
                   'environmentMode':'WorkloadProfiles',
-                  'appLogsConfiguration':{'destination':'none'},
+                  'appLogsConfiguration':{'destination':'azure-monitor'},
                   'workloadProfiles':[{'name':'Consumption','workloadProfileType':'Consumption'}]
               }
           }
@@ -171,6 +171,7 @@ jobs:
             echo '- Region and Azure Container Apps domain: brazilsouth verified'
             echo '- Existing two Express environments and all their apps: not modified'
             echo '- Old DEV, DNS, database rows and media: not accessed'
+            echo '- Azure Monitor destination: configured; diagnostics routing requires separate configuration'
             echo '- Azure Files binding, new app deployments and GET job: not yet run'
           } >> "$GITHUB_STEP_SUMMARY"
           echo 'Verified explicit WorkloadProfiles mode through ARM GET; separate target CAE is ready.'

@@ -149,7 +149,12 @@ jobs:
             echo "::error::Target Terraform validation failed; private diagnostics not published."
             exit 1
           }
-          terraform plan -out="$RUNNER_TEMP/target.tfplan" -input=false -no-color \
+          # Limit scope to requested PostgreSQL resources. Azure normalized the existing
+          # Container Apps Environment after phase 1; we must NEVER update it in DB stage.
+          terraform plan -target=random_password.postgres_admin \
+            -target=azurerm_postgresql_flexible_server.migration \
+            -target=azurerm_postgresql_flexible_server_database.databases \
+            -out="$RUNNER_TEMP/target.tfplan" -input=false -no-color \
             > "$RUNNER_TEMP/target-plan.log" 2>&1 || {
               echo "::error::Target Terraform plan failed; private diagnostics not published."
               exit 1

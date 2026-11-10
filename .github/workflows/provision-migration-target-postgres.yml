@@ -159,10 +159,12 @@ jobs:
           import json,os,sys
           p=json.load(open(os.path.join(os.environ["RUNNER_TEMP"],"target-plan.json")))
           allowed={'random_password','azurerm_postgresql_flexible_server','azurerm_postgresql_flexible_server_database'}
-          changes=p.get('resource_changes') or []
-          fail=[c.get('address','?') for c in changes if c.get('type') not in allowed or c.get('change',{}).get('actions') != ['create']]
+          # terraform show -json also lists existing resources as ['no-op'].
+          # Ignore only truly unchanged resources; any update/delete still blocks apply.
+          changes=[c for c in (p.get('resource_changes') or []) if c.get('change',{}).get('actions') != ['no-op']]
+          fail=[c.get('type','?') for c in changes if c.get('type') not in allowed or c.get('change',{}).get('actions') != ['create']]
           if not changes or fail:
-              print('::error::Foundation plan blocked: non-create or unapproved resource change.')
+              print('::error::PostgreSQL-only plan blocked: '+', '.join(sorted(set(fail))) if fail else '::error::No new PostgreSQL resources in plan.')
               sys.exit(1)
           expected = {'random_password.postgres_admin[0]', 'azurerm_postgresql_flexible_server.migration[0]', 'azurerm_postgresql_flexible_server_database.databases["coderats_base"]', 'azurerm_postgresql_flexible_server_database.databases["coderats_grader"]'}
           addresses = set(c.get('address') for c in changes)

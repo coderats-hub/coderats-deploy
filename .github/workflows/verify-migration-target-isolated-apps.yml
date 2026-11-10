@@ -277,6 +277,9 @@ jobs:
           fi
           rm -f "$RUNNER_TEMP/env-storages-private.json" "$RUNNER_TEMP/activity-private.json"
           echo 'Target-only read-only registration diagnostic completed.'
+          # This summary contains only booleans, status counts and allowlisted
+          # error classes; no credentials or Azure raw messages.
+          cat "$GITHUB_STEP_SUMMARY"
 
       - name: Cleanup private transient files and Azure session
         if: always()

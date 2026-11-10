@@ -1,0 +1,216 @@
+name: Recover CodeRats migration-target Web only (isolated, one-time)
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "Type DEPLOY_MIGRATION_WEB to permit isolated destination-only Web recovery"
+        required: true
+        type: string
+  push:
+    branches: [main]
+    paths: [".github/workflows/deploy-migration-target-web-recovery.yml"]
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: coderats-migration-target-web-recovery
+  cancel-in-progress: false
+
+jobs:
+  web-recovery:
+    if: >-
+      github.repository == 'coderats-hub/coderats-deploy' &&
+      github.ref == 'refs/heads/main' &&
+      ((github.event_name == 'workflow_dispatch' && inputs.confirmation == 'DEPLOY_MIGRATION_WEB') ||
+       (github.event_name == 'push' &&
+        startsWith(github.event.head_commit.message, 'ci(migration): recover isolated mirror web')))
+    runs-on: ubuntu-latest
+    environment: migration-target
+    timeout-minutes: 40
+    env:
+      SID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      TID: ${{ secrets.AZURE_TENANT_ID }}
+      RG: rg-coderats-migration-c26m0911
+      ACR: crcoderatsmigc26m0911
+      CAE: cae-coderatsmig-c26m0911
+      WEB: ca-coderatsmig-web-c26m0911
+      API: ca-coderatsmig-api-c26m0911
+      GRADER: ca-coderatsmig-grader-c26m0911
+      ACR_WEB_TOKEN: coderats-mirror-web-pull
+    steps:
+      - name: Log in only to the authorized target Azure subscription
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Verify subscription, image dependencies, existing apps and isolated default domain
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SID" == "da3650a9-e291-43f1-ae4b-9dcc8ff84239" ]]
+          [[ "$TID" == "1cf74c7e-fcd9-46f7-8a9d-e699d3529003" ]]
+          [[ "$(az account show --query id -o tsv)" == "$SID" ]]
+          [[ "$(az account show --query tenantId -o tsv)" == "$TID" ]]
+          [[ "$(az acr show -g "$RG" -n "$ACR" --subscription "$SID" --query name -o tsv --only-show-errors)" == "$ACR" ]]
+          for app in "$GRADER" "$API"; do
+            [[ "$(az containerapp show -g "$RG" -n "$app" --subscription "$SID" --query properties.runningStatus -o tsv --only-show-errors)" == "Running" ]] || {
+              echo "::error::Existing target API or Grader is not Running. No Web resources changed."
+              exit 1
+            }
+          done
+          domain="$(az containerapp env show -g "$RG" -n "$CAE" --subscription "$SID" --query properties.defaultDomain -o tsv --only-show-errors)"
+          [[ "$domain" == *.azurecontainerapps.io ]]
+          echo "MIRROR_WEB_ORIGIN=https://$WEB.$domain" >> "$GITHUB_ENV"
+          echo "Target-only prerequisites confirmed. No original DEV connection."
+
+      - name: Check if Web already exists before changing anything
+        shell: bash
+        run: |
+          set -euo pipefail
+          if az containerapp show -g "$RG" -n "$WEB" --subscription "$SID" --query name -o tsv --only-show-errors >/dev/null 2>&1; then
+            echo "WEB_EXISTS=true" >> "$GITHUB_ENV"
+            echo "Existing target Web resource detected: creation will be skipped."
+          else
+            echo "WEB_EXISTS=false" >> "$GITHUB_ENV"
+            echo "Target Web resource is absent: will create without ingress first."
+          fi
+
+      - name: Prepare separate read-only ACR token without rotating API or Grader credentials
+        if: env.WEB_EXISTS == 'false'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! az acr token show --registry "$ACR" --name "$ACR_WEB_TOKEN" --subscription "$SID" \
+            --query name -o tsv --only-show-errors >/dev/null 2>&1; then
+            az acr token create --registry "$ACR" --name "$ACR_WEB_TOKEN" \
+              --scope-map _repositories_pull --subscription "$SID" --only-show-errors -o none
+          fi
+          az acr token update --registry "$ACR" --name "$ACR_WEB_TOKEN" --status enabled \
+            --subscription "$SID" --only-show-errors -o none
+          pullpass="$(az acr token credential generate --registry "$ACR" --name "$ACR_WEB_TOKEN" \
+            --password1 --expiration-in-days 30 --subscription "$SID" \
+            --query 'passwords[0].value' -o tsv --only-show-errors)"
+          [[ -n "$pullpass" ]]
+          echo "::add-mask::$pullpass"
+          echo "WEB_ACR_PULL_PASSWORD=$pullpass" >> "$GITHUB_ENV"
+          unset pullpass
+          echo "Web-only scoped pull credential created; existing API/Grader registry tokens untouched."
+
+      - name: Create destination Web without ingress to isolate Azure external-ingress failure
+        if: env.WEB_EXISTS == 'false'
+        shell: bash
+        run: |
+          set -euo pipefail
+          identity="$(az identity show -g "$RG" -n id-coderatsmig-web-c26m0911 \
+            --subscription "$SID" --query id -o tsv --only-show-errors)"
+          log="$RUNNER_TEMP/mirror-web-create-private.log"
+          if az containerapp create --subscription "$SID" -g "$RG" -n "$WEB" \
+            --environment "$CAE" --image "$ACR.azurecr.io/web-coderats-base:mirror-db35f8c2f5fb" \
+            --user-assigned "$identity" \
+            --registry-server "$ACR.azurecr.io" --registry-username "$ACR_WEB_TOKEN" \
+            --registry-password "$WEB_ACR_PULL_PASSWORD" \
+            --min-replicas 1 --max-replicas 1 --cpu 0.5 --memory 1Gi \
+            --env-vars "HOSTNAME=0.0.0.0" "PORT=3000" \
+              "API_PROXY_TARGET=http://$API" "NEXT_PUBLIC_API_URL=$MIRROR_WEB_ORIGIN" \
+            --only-show-errors -o none > "$log" 2>&1; then
+            echo "Target Web Container App ARM creation succeeded with no ingress."
+          else
+            python3 - "$log" <<'PY'
+          import re,sys
+          s=open(sys.argv[1],errors="replace").read()
+          codes=re.findall(r"\(([A-Za-z][A-Za-z0-9_]{1,64})\)",s)
+          codes+=re.findall(r'"code"\s*:\s*"([A-Za-z][A-Za-z0-9_]{1,64})"',s)
+          allow={"UnexpectedException","BadRequest","Conflict","ResourceNotFound","RequestDisallowedByAzure",
+                 "RequestDisallowedByPolicy","ResourceQuotaExceeded","QuotaExceeded","InvalidTemplate",
+                 "OperationNotAllowed","AuthorizationFailed","InvalidParameterValue",
+                 "ContainerAppOperationError","ManagedEnvironmentNotFound"}
+          shown=next((x for x in codes if x in allow),"unclassified")
+          print("::error::Web Container App ARM create failed (sanitized error code: "+shown+"). No secret-bearing CLI logs published.")
+          PY
+            exit 1
+          fi
+
+      - name: Enable external HTTP ingress only on the new destination Web
+        shell: bash
+        run: |
+          set -euo pipefail
+          fqdn="$(az containerapp show --subscription "$SID" -g "$RG" -n "$WEB" \
+            --query properties.configuration.ingress.fqdn -o tsv --only-show-errors 2>/dev/null || true)"
+          if [[ "$fqdn" != *.azurecontainerapps.io ]]; then
+            log="$RUNNER_TEMP/mirror-web-ingress-private.log"
+            if az containerapp ingress enable --subscription "$SID" -g "$RG" -n "$WEB" \
+              --type external --target-port 3000 --transport auto --only-show-errors -o none > "$log" 2>&1; then
+              echo "Target Web external ingress successfully enabled."
+            else
+              python3 - "$log" <<'PY'
+          import re,sys
+          s=open(sys.argv[1],errors="replace").read()
+          codes=re.findall(r"\(([A-Za-z][A-Za-z0-9_]{1,64})\)",s)
+          codes+=re.findall(r'"code"\s*:\s*"([A-Za-z][A-Za-z0-9_]{1,64})"',s)
+          allow={"UnexpectedException","BadRequest","Conflict","ResourceNotFound","RequestDisallowedByAzure",
+                 "RequestDisallowedByPolicy","ResourceQuotaExceeded","QuotaExceeded","InvalidTemplate",
+                 "OperationNotAllowed","AuthorizationFailed","InvalidParameterValue",
+                 "ContainerAppOperationError","ManagedEnvironmentNotFound"}
+          shown=next((x for x in codes if x in allow),"unclassified")
+          print("::error::Web external ingress could not be enabled (sanitized error code: "+shown+"). No private logs published.")
+          PY
+              exit 1
+            fi
+          else
+            echo "Target Web already has an ingress hostname: no ingress reconfiguration attempted."
+          fi
+
+      - name: Verify Web FQDN, revision readiness and public HTTPS health
+        shell: bash
+        run: |
+          set -euo pipefail
+          fqdn="$(az containerapp show --subscription "$SID" -g "$RG" -n "$WEB" \
+            --query properties.configuration.ingress.fqdn -o tsv --only-show-errors)"
+          [[ "https://$fqdn" == "$MIRROR_WEB_ORIGIN" ]] || {
+            echo "::error::Target Web hostname mismatch. No production DNS changed."
+            exit 1
+          }
+          ready=""
+          for i in $(seq 1 12); do
+            ready="$(az containerapp show --subscription "$SID" -g "$RG" -n "$WEB" \
+              --query properties.latestReadyRevisionName -o tsv --only-show-errors 2>/dev/null || true)"
+            [[ -n "$ready" && "$ready" != "None" ]] && break
+            sleep 10
+          done
+          [[ -n "$ready" && "$ready" != "None" ]] || {
+            echo "::error::Destination Web has no ready revision; investigate app system logs privately."
+            exit 1
+          }
+          http="000"
+          for i in $(seq 1 12); do
+            http="$(curl -sS -L -o /dev/null --connect-timeout 6 --max-time 15 -w '%{http_code}' "$MIRROR_WEB_ORIGIN/health" 2>/dev/null || true)"
+            [[ "$http" == "200" ]] && break
+            sleep 10
+          done
+          {
+            echo "### CodeRats isolated Web recovery"
+            echo "- Target: migration-target; origin DEV unchanged"
+            echo "- Web endpoint: $MIRROR_WEB_ORIGIN"
+            echo "- Web revision ready: yes"
+            echo "- Web /health HTTP: $http"
+            echo "- Grader and API unchanged"
+            echo "- Real user data, OAuth, and production DNS untouched"
+            echo "- Web registry token: temporary 30-day ACR read-only; replace with managed identity"
+          } >> "$GITHUB_STEP_SUMMARY"
+          [[ "$http" == "200" ]] || {
+            echo "::error::Destination Web health failed with HTTP $http; app may need routing/runtime fixes."
+            exit 1
+          }
+          echo "Target mirror Web ready and HTTPS /health returned 200: $MIRROR_WEB_ORIGIN"
+
+      - name: Remove temporary diagnostic logs and log out
+        if: always()
+        shell: bash
+        run: |
+          rm -f "$RUNNER_TEMP/mirror-web-create-private.log" "$RUNNER_TEMP/mirror-web-ingress-private.log"
+          az logout --output none >/dev/null 2>&1 || true

@@ -1,0 +1,206 @@
+name: Provision isolated CodeRats target foundation (new Azure only)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [".github/workflows/provision-migration-target-foundation.yml"]
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: coderats-migration-target-foundation-apply
+  cancel-in-progress: false
+
+jobs:
+  foundation:
+    if: >-
+      github.repository == 'coderats-hub/coderats-deploy' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' ||
+       startsWith(github.event.head_commit.message, 'ci(migration): provision target foundation only'))
+    environment: migration-target
+    runs-on: ubuntu-latest
+    timeout-minutes: 65
+    env:
+      SID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      TID: ${{ secrets.AZURE_TENANT_ID }}
+      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      ARM_USE_OIDC: "true"
+      ARM_RESOURCE_PROVIDER_REGISTRATIONS: "none"
+      TF_IN_AUTOMATION: "true"
+      TF_INPUT: "false"
+      TF_VAR_destination_subscription_id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      TF_VAR_destination_tenant_id: ${{ secrets.AZURE_TENANT_ID }}
+      TF_VAR_unique_suffix: "c26m0911"
+      TF_VAR_app_location: "brazilsouth"
+      TF_VAR_postgres_location: "brazilsouth"
+      TF_VAR_enable_database: "false"
+      TF_VAR_enable_role_assignments: "false"
+    steps:
+      - name: Check approved destination, source permissions and target-only environment
+        shell: bash
+        env:
+          GH_APP_ID: ${{ vars.CODERATS_DEPLOY_APP_ID }}
+          GH_APP_KEY: ${{ secrets.CODERATS_DEPLOY_APP_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          [[ "$SID" == "da3650a9-e291-43f1-ae4b-9dcc8ff84239" ]] || exit 1
+          [[ "$TID" == "1cf74c7e-fcd9-46f7-8a9d-e699d3529003" ]] || exit 1
+          [[ -n "${ARM_CLIENT_ID:-}" && -n "${GH_APP_ID:-}" && -n "${GH_APP_KEY:-}" ]] || exit 1
+          echo "Destination subscription/tenant matched; separate private GitHub App credentials present."
+
+      - name: Create read-only checkout token for infra repository
+        uses: actions/create-github-app-token@v2
+        id: token
+        with:
+          app-id: ${{ vars.CODERATS_DEPLOY_APP_ID }}
+          private-key: ${{ secrets.CODERATS_DEPLOY_APP_PRIVATE_KEY }}
+          owner: coderats-hub
+          repositories: coderats-base-infra
+          permission-contents: read
+
+      - name: Fetch pinned private Terraform
+        uses: actions/checkout@v4
+        with:
+          repository: coderats-hub/coderats-base-infra
+          ref: c2f7d2ddf9388edf8bcb1899bed572db7763046c
+          token: ${{ steps.token.outputs.token }}
+          path: private-infra
+          persist-credentials: false
+
+      - name: Verify reviewed Terraform SHA and isolation
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$(git -C private-infra rev-parse HEAD)" == "c2f7d2ddf9388edf8bcb1899bed572db7763046c" ]]
+          [[ -f private-infra/migration-target/terraform/main.tf ]]
+          echo "Reviewed infrastructure SHA is pinned; root DEV Terraform will not be used."
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "1.16.0"
+
+      - name: Login to target Azure with GitHub OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Verify Azure identity, target state and allowed region
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$(az account show --query id -o tsv)" == "$SID" ]]
+          [[ "$(az account show --query tenantId -o tsv)" == "$TID" ]]
+          [[ "$(az group exists -n rg-coderats-migration-state --subscription "$SID" -o tsv --only-show-errors)" == "true" ]]
+          location="$(az storage account show --subscription "$SID" -g rg-coderats-migration-state -n stcrtf8ff84239 --query primaryLocation -o tsv --only-show-errors)"
+          [[ "$location" == "brazilsouth" ]] || { echo "::error::State storage is not in allowed region brazilsouth."; exit 1; }
+          echo "Target-only state account confirmed in brazilsouth."
+
+      - name: Register only Azure providers needed for the isolated foundation
+        shell: bash
+        run: |
+          set -euo pipefail
+          for rp in Microsoft.ContainerRegistry Microsoft.OperationalInsights Microsoft.KeyVault Microsoft.ManagedIdentity Microsoft.App; do
+            current="$(az provider show --namespace "$rp" --subscription "$SID" --query registrationState -o tsv --only-show-errors)"
+            if [[ "$current" != "Registered" ]]; then
+              echo "Registering required destination provider: $rp"
+              az provider register --namespace "$rp" --subscription "$SID" --wait --only-show-errors -o none
+            fi
+            [[ "$(az provider show --namespace "$rp" --subscription "$SID" --query registrationState -o tsv --only-show-errors)" == "Registered" ]] || {
+              echo "::error::Target resource provider not registered: $rp"
+              exit 1
+            }
+          done
+
+      - name: Configure state backend using ephemeral masked storage key
+        shell: bash
+        run: |
+          set -euo pipefail
+          key="$(az storage account keys list --subscription "$SID" -g rg-coderats-migration-state \
+            -n stcrtf8ff84239 --query '[0].value' -o tsv --only-show-errors)"
+          [[ -n "$key" ]] || exit 1
+          echo "::add-mask::$key"
+          echo "ARM_ACCESS_KEY=$key" >> "$GITHUB_ENV"
+          unset key
+
+      - name: Validate and plan strictly additive target foundation
+        shell: bash
+        working-directory: private-infra/migration-target/terraform
+        run: |
+          set -euo pipefail
+          terraform fmt -recursive >/dev/null
+          terraform init -backend-config="resource_group_name=rg-coderats-migration-state" \
+            -backend-config="storage_account_name=stcrtf8ff84239" \
+            -backend-config="container_name=tfstate" \
+            -backend-config="key=coderats/migration-target.tfstate" \
+            -input=false -no-color > "$RUNNER_TEMP/target-init.log" 2>&1 || {
+              echo "::error::Target state init failed; private diagnostics not published."
+              exit 1
+            }
+          terraform validate -no-color > "$RUNNER_TEMP/target-validate.log" 2>&1 || {
+            echo "::error::Target Terraform validation failed; private diagnostics not published."
+            exit 1
+          }
+          terraform plan -out="$RUNNER_TEMP/target.tfplan" -input=false -no-color \
+            > "$RUNNER_TEMP/target-plan.log" 2>&1 || {
+              echo "::error::Target Terraform plan failed; private diagnostics not published."
+              exit 1
+            }
+          terraform show -json "$RUNNER_TEMP/target.tfplan" > "$RUNNER_TEMP/target-plan.json"
+          python3 - <<'PY'
+          import json,os,sys
+          p=json.load(open(os.path.join(os.environ["RUNNER_TEMP"],"target-plan.json")))
+          allowed={'terraform_data','azurerm_resource_group','azurerm_log_analytics_workspace','azurerm_container_registry','azurerm_storage_account','azurerm_storage_share','azurerm_key_vault','azurerm_container_app_environment','azurerm_user_assigned_identity'}
+          changes=p.get('resource_changes') or []
+          fail=[c.get('address','?') for c in changes if c.get('type') not in allowed or c.get('change',{}).get('actions') != ['create']]
+          if not changes or fail:
+              print('::error::Foundation plan blocked: non-create or unapproved resource change.')
+              sys.exit(1)
+          if any(c.get('type')=='azurerm_postgresql_flexible_server' or c.get('type')=='azurerm_role_assignment' for c in changes):
+              print('::error::Database or RBAC change prohibited in phase 1.')
+              sys.exit(1)
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:
+              f.write('### CodeRats destination Terraform: isolated foundation\n')
+              f.write('- New subscription and Brazil South target verified\n')
+              f.write('- Terraform validation succeeded\n')
+              f.write('- Plan: **'+str(len(changes))+' create-only changes**, no update/delete\n')
+              f.write('- PostgreSQL, RBAC assignments and application deploys: excluded from phase 1\n')
+          print('Plan was limited to '+str(len(changes))+' new, approved resource types.')
+          PY
+
+      - name: Apply reviewed creation-only target plan
+        shell: bash
+        working-directory: private-infra/migration-target/terraform
+        run: |
+          set -euo pipefail
+          terraform apply -input=false -no-color "$RUNNER_TEMP/target.tfplan" \
+            > "$RUNNER_TEMP/target-apply.log" 2>&1 || {
+              echo "::error::Target foundation apply failed; inspect Azure target RG. No live CodeRats changes were requested."
+              exit 1
+            }
+          echo "Destination foundation apply completed."
+          echo "- Target Terraform foundation apply: **completed**" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify destination resource count
+        shell: bash
+        run: |
+          set -euo pipefail
+          n="$(az resource list --subscription "$SID" --resource-group rg-coderats-migration-c26m0911 --query 'length(@)' -o tsv --only-show-errors)"
+          echo "- Resources visible in new destination RG: $n" >> "$GITHUB_STEP_SUMMARY"
+          echo "Azure destination resource count: $n"
+
+      - name: Cleanup source, temporary plans, state credentials and session
+        if: always()
+        shell: bash
+        run: |
+          rm -rf private-infra
+          rm -f "$RUNNER_TEMP"/target-*.log "$RUNNER_TEMP"/target-*.json "$RUNNER_TEMP"/target-*.tfplan
+          az logout --output none >/dev/null 2>&1 || true

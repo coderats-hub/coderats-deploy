@@ -24,7 +24,7 @@ jobs:
       github.repository == 'coderats-hub/coderats-deploy' &&
       github.ref == 'refs/heads/main' &&
       ((github.event_name == 'workflow_dispatch' && inputs.confirmation == 'DIAGNOSE_WP_MIRROR') ||
-       (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'ci(migration): diagnose wp mirror health once')))
+       (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'ci(migration): diagnose wp mirror current health once')))
     runs-on: ubuntu-latest
     environment: migration-target
     timeout-minutes: 15
@@ -64,6 +64,10 @@ jobs:
               f.write('WP_DOMAIN='+str(p['defaultDomain'])+'\n')
           print('Destination ARM mode and region verified without reading source DEV.')
           PY
+          # GitHub GITHUB_ENV becomes visible only to subsequent steps, not
+          # to the same shell. Resolve the already-validated public domain here.
+          WP_DOMAIN="$(python3 -c 'import json,os; print(json.load(open(os.path.join(os.environ["RUNNER_TEMP"],"wp-env-private.json")))["properties"]["defaultDomain"])')"
+          [[ "$WP_DOMAIN" == *.brazilsouth.azurecontainerapps.io ]]
           for label in WEB API GRADER; do
             name="${!label}"
             if az containerapp show --subscription "$SID" -g "$RG" -n "$name" \

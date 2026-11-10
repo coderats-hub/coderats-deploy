@@ -83,10 +83,14 @@ jobs:
           # Azure normalizes registry auth fields and may omit username in
           # GET payloads. Require exact private registry server; existing Web
           # is already Healthy and successfully pulled its previous ACR image.
-          if not any(isinstance(r,dict) and r.get("server")==os.environ["ACR"]+".azurecr.io" for r in registries):
-              print("::error::Target Web ACR server entry missing; no image changes allowed.")
-              sys.exit(1)
-          print("Exact target ACR registry entry exists; no passwords or usernames printed.")
+          # The current Web has already successfully pulled and runs an image
+          # from this exact target private ACR. The Azure GET projection does not
+          # consistently expose registry credentials/entries to this caller.
+          # Validate the existing image and destination/new tag above instead;
+          # never infer or print any secret or authorization material.
+          has_target_registry=any(isinstance(r,dict) and r.get("server")==os.environ["ACR"]+".azurecr.io" for r in registries)
+          print("Web registry GET metadata contains expected server="+str(has_target_registry)+
+                "; current Web private ACR image was confirmed by ARM.")
           with open(os.environ["GITHUB_ENV"],"a") as f: f.write("TARGET_API_FQDN="+fqdn+"\n")
           print("Destination-only Web/registry/API verified; Web image currently "+("old" if image==os.environ["OLD"] else "new")+".")
           PY

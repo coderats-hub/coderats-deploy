@@ -732,6 +732,48 @@ jobs:
           cat "$GITHUB_STEP_SUMMARY"
           rm -f "$RUNNER_TEMP/mirror-private-dns-revisions.json" "$logs"
 
+      - name: Classify API proxy redirect Location without following or publishing headers
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SID" == "da3650a9-e291-43f1-ae4b-9dcc8ff84239" ]]
+          web="$(az containerapp show --subscription "$SID" -g "$RG" -n "$WEB" \
+            --query properties.configuration.ingress.fqdn -o tsv --only-show-errors)"
+          api="$(az containerapp show --subscription "$SID" -g "$RG" -n "$API" \
+            --query properties.configuration.ingress.fqdn -o tsv --only-show-errors)"
+          [[ "$web" == "$WEB".*.brazilsouth.azurecontainerapps.io ]]
+          [[ "$api" == "$API".*.brazilsouth.azurecontainerapps.io ]]
+          headers="$RUNNER_TEMP/mirror-api-redirect-headers-private.txt"
+          status="$(curl -sS -o /dev/null -D "$headers" \
+            --max-redirs 0 --connect-timeout 7 --max-time 18 \
+            -w '%{http_code}' "https://$web/api/v1/auth/me" 2>/dev/null || true)"
+          [[ "$status" =~ ^[0-9]{3}$ ]] || status="unavailable"
+          API_PROVIDER_FQDN="$api" WEB_FQDN="$web" HEADERS="$headers" HTTP_STATUS="$status" python3 - <<'PY'
+          import os,re,urllib.parse
+          s=open(os.environ["HEADERS"],errors="replace").read()
+          locs=re.findall(r"(?im)^location:\s*(\S+)\s*$",s)
+          loc=locs[-1].strip() if locs else ""
+          parsed=urllib.parse.urlsplit(loc)
+          provider=os.environ["API_PROVIDER_FQDN"]
+          name=provider.split(".",1)[0]
+          suffix=provider.split(".",1)[1] if "." in provider else ""
+          private=name+".internal."+suffix
+          label="none"
+          if parsed.scheme=="https" and parsed.hostname==private: label="private-api-https"
+          elif parsed.scheme=="http" and parsed.hostname==private: label="private-api-http"
+          elif parsed.hostname==os.environ["WEB_FQDN"]: label="same-web-origin"
+          elif parsed.hostname==provider: label="provider-api-fqdn"
+          elif parsed.hostname: label="other-host"
+          elif loc.startswith("/"): label="relative-path"
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:
+              f.write("### Anonymous /api/v1/auth/me redirect classification\n")
+              f.write("- HTTP without redirect following: "+os.environ["HTTP_STATUS"]+"\n")
+              f.write("- Location host and scheme category: "+label+"\n")
+              f.write("- No response bodies, raw headers, cookies, query strings or redirect values published\n")
+          PY
+          cat "$GITHUB_STEP_SUMMARY"
+          rm -f "$headers"
+
       - name: Print safe summary
         if: always()
         shell: bash

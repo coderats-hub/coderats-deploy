@@ -241,17 +241,35 @@ jobs:
             echo "::error::Target Web hostname mismatch. No production DNS changed."
             exit 1
           }
-          ready=""
+          # The ACA latestReadyRevisionName field can lag behind the actual
+          # revision health and external HTTPS readiness. Trust current revision
+          # running/health states instead of the cached latestReady pointer.
+          healthy="false"
           for i in $(seq 1 12); do
-            ready="$(az containerapp show --subscription "$SID" -g "$RG" -n "$WEB" \
-              --query properties.latestReadyRevisionName -o tsv --only-show-errors 2>/dev/null || true)"
-            [[ -n "$ready" && "$ready" != "None" ]] && break
+            az containerapp revision list --subscription "$SID" -g "$RG" -n "$WEB" \
+              --only-show-errors -o json > "$RUNNER_TEMP/web-revisions-health.json"
+            if python3 - <<'PY'
+          import json,os,sys
+          path=os.path.join(os.environ["RUNNER_TEMP"],"web-revisions-health.json")
+          a=json.load(open(path))
+          ok=isinstance(a,list) and any(
+              r.get("properties",{}).get("active") is True and
+              r.get("properties",{}).get("healthState")=="Healthy" and
+              r.get("properties",{}).get("runningState")=="Running" for r in a
+          )
+          sys.exit(0 if ok else 1)
+          PY
+            then
+              healthy="true"
+              break
+            fi
             sleep 10
           done
-          [[ -n "$ready" && "$ready" != "None" ]] || {
-            echo "::error::Destination Web has no ready revision; investigate app system logs privately."
+          [[ "$healthy" == "true" ]] || {
+            echo "::error::Destination Web revision not Healthy/Running; independent runtime diagnosis required."
             exit 1
           }
+          echo "Destination Web has an active, Healthy, Running revision."
           http="000"
           for i in $(seq 1 12); do
             http="$(curl -sS -L -o /dev/null --connect-timeout 6 --max-time 15 -w '%{http_code}' "$MIRROR_WEB_ORIGIN/health" 2>/dev/null || true)"
@@ -262,7 +280,7 @@ jobs:
             echo "### CodeRats isolated Web recovery"
             echo "- Target: migration-target; origin DEV unchanged"
             echo "- Web endpoint: $MIRROR_WEB_ORIGIN"
-            echo "- Web revision ready: yes"
+            echo "- Web revision Healthy/Running: $healthy"
             echo "- Web /health HTTP: $http"
             echo "- Grader and API unchanged"
             echo "- Real user data, OAuth, and production DNS untouched"
@@ -272,7 +290,11 @@ jobs:
             echo "::error::Destination Web health failed with HTTP $http; app may need routing/runtime fixes."
             exit 1
           }
-          echo "Target mirror Web ready and HTTPS /health returned 200: $MIRROR_WEB_ORIGIN"
+          status="$(curl -sS -o /dev/null --connect-timeout 7 --max-time 18 -w '%{http_code}' "$MIRROR_WEB_ORIGIN/api/v1/auth/me" 2>/dev/null || true)"
+          [[ "$status" =~ ^[0-9]{3}$ ]] || status="unavailable"
+          echo "- Unauthenticated API proxy /api/v1/auth/me HTTP: $status (401 expected)" >> "$GITHUB_STEP_SUMMARY"
+          echo "Target Web healthy: $MIRROR_WEB_ORIGIN, API proxy unauthenticated HTTP $status"
+          rm -f "$RUNNER_TEMP/web-revisions-health.json"
 
       - name: Remove temporary diagnostic logs and log out
         if: always()

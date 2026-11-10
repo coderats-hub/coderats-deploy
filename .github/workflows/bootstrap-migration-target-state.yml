@@ -48,14 +48,19 @@ jobs:
           storage="stcrtf8ff84239"
           container="tfstate"
 
-          # One-time state resources, never touch old live DEV resources.
-          # Direct ARM PUT distinguishes Azure CLI SDK subscription resolution
-          # from a backend/billing authorization error after directory change.
-          az rest --method put \
-            --url "https://management.azure.com/subscriptions/$TARGET_SUBSCRIPTION_ID/resourcegroups/$group?api-version=2021-04-01" \
-            --body '{"location":"eastus","tags":{"project":"coderats","environment":"migration-target","purpose":"terraform-state"}}' \
-            --only-show-errors -o none
-          if az storage account show -n "$storage" -g "$group" \
+          # Read-only existence check first. Do not re-PUT an existing RG;
+          # the new subscription was transferred between Entra tenants.
+          if [[ "$(az group exists --name "$group" --subscription "$TARGET_SUBSCRIPTION_ID" -o tsv --only-show-errors)" == "true" ]]; then
+            echo "Destination Terraform state resource group exists; creation skipped."
+          else
+            echo "Destination state resource group does not exist: trying isolated ARM creation."
+            az rest --method put \
+              --url "https://management.azure.com/subscriptions/$TARGET_SUBSCRIPTION_ID/resourcegroups/$group?api-version=2021-04-01" \
+              --body '{"location":"eastus","tags":{"project":"coderats","environment":"migration-target","purpose":"terraform-state"}}' \
+              --only-show-errors -o none
+          fi
+          echo "Inspecting destination Terraform state storage account..."
+          if az storage account show --subscription "$TARGET_SUBSCRIPTION_ID" -n "$storage" -g "$group" \
              --query name -o tsv --only-show-errors >/dev/null 2>&1; then
             echo "Dedicated state storage already exists in the expected resource group."
           else
@@ -75,14 +80,14 @@ jobs:
               --only-show-errors -o none
           fi
 
-          id="$(az storage account show -n "$storage" -g "$group" --query id -o tsv)"
+          id="$(az storage account show --subscription "$TARGET_SUBSCRIPTION_ID" -n "$storage" -g "$group" --query id -o tsv)"
           [[ "$id" == "/subscriptions/${TARGET_SUBSCRIPTION_ID}/resourceGroups/$group/"* ]] || {
             echo "::error::State storage is not in the approved target subscription/resource group."
             exit 1
           }
 
           # Contributor can list keys, but cannot assign RBAC; avoid public artifacts.
-          account_key="$(az storage account keys list -n "$storage" -g "$group" \
+          account_key="$(az storage account keys list --subscription "$TARGET_SUBSCRIPTION_ID" -n "$storage" -g "$group" \
             --query '[0].value' -o tsv --only-show-errors)"
           [[ -n "$account_key" ]] || exit 1
           echo "::add-mask::$account_key"

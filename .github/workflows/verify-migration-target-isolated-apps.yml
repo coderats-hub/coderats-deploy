@@ -129,7 +129,7 @@ jobs:
           az postgres flexible-server show --subscription "$SID" -g "$RG" -n "$DB" \
             --query '{name:name,state:state,version:version,publicAccess:network.publicNetworkAccess,delegatedSubnet:network.delegatedSubnetResourceId,privateDns:network.privateDnsZoneArmResourceId}' \
             -o json --only-show-errors > "$RUNNER_TEMP/database-private.json"
-          if az postgres flexible-server firewall-rule list --subscription "$SID" -g "$RG" -n "$DB" \
+          if az postgres flexible-server firewall-rule list --subscription "$SID" -g "$RG" --server-name "$DB" \
               --only-show-errors -o json > "$RUNNER_TEMP/firewall-private.json" 2>/dev/null; then
             echo "FIREWALL_QUERY_OK=true" >> "$GITHUB_ENV"
           else

@@ -338,6 +338,43 @@ jobs:
           # error classes; no credentials or Azure raw messages.
           cat "$GITHUB_STEP_SUMMARY"
 
+      - name: Read-only ARM environment mode verification for both mirror CAEs
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SID" == 'da3650a9-e291-43f1-ae4b-9dcc8ff84239' ]]
+          [[ "$TID" == '1cf74c7e-fcd9-46f7-8a9d-e699d3529003' ]]
+          echo '### Azure ARM explicit environment mode comparison (read-only)' >> "$GITHUB_STEP_SUMMARY"
+          for label in previous candidate; do
+            case "$label" in
+              previous) env_name='cae-coderatsmig-c26m0911' ;;
+              candidate) env_name='cae-coderatsmig-standard-c26m0911' ;;
+            esac
+            url="https://management.azure.com/subscriptions/$SID/resourceGroups/$RG/providers/Microsoft.App/managedEnvironments/$env_name?api-version=2026-07-01"
+            if az rest --method get --url "$url" --only-show-errors -o json \
+              > "$RUNNER_TEMP/arm-mode-$label-private.json" 2>/dev/null; then
+              LABEL="$label" EXPECTED="$env_name" python3 - <<'PY'
+          import json,os,sys
+          label=os.environ['LABEL']
+          d=json.load(open(os.path.join(os.environ['RUNNER_TEMP'],'arm-mode-'+label+'-private.json')))
+          p=d.get('properties') or {}
+          if d.get('name')!=os.environ['EXPECTED']:sys.exit('::error::Unexpected ARM environment identity.')
+          mode=p.get('environmentMode')
+          mode=str(mode) if mode is not None else 'unreported'
+          if mode not in ('Express','WorkloadProfiles','ConsumptionOnly','unreported'):
+              mode='other'
+          profiles=p.get('workloadProfiles') or []
+          has_consumption=any(isinstance(x,dict) and x.get('name')=='Consumption' for x in profiles)
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:
+              f.write('- '+label+' CAE explicit ARM mode: '+mode+'; Consumption profile metadata: '+str(has_consumption)+'\n')
+          PY
+            else
+              echo "- $label CAE explicit ARM query: unavailable" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
+          cat "$GITHUB_STEP_SUMMARY"
+          rm -f "$RUNNER_TEMP"/arm-mode-*-private.json
+
       - name: Cleanup private transient files and Azure session
         if: always()
         shell: bash

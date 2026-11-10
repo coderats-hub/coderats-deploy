@@ -25,7 +25,7 @@ jobs:
       github.repository == 'coderats-hub/coderats-deploy' &&
       github.ref == 'refs/heads/main' &&
       ((github.event_name == 'workflow_dispatch' && inputs.confirmation == 'DEPLOY_STANDARD_MIRROR') ||
-       (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'ci(migration): deploy isolated standard mirror once')))
+       (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'ci(migration): deploy verified workloadprofiles mirror once')))
     runs-on: ubuntu-latest
     environment: migration-target
     timeout-minutes: 90
@@ -33,7 +33,7 @@ jobs:
       SID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
       TID: ${{ secrets.AZURE_TENANT_ID }}
       RG: rg-coderats-migration-c26m0911
-      CAE: cae-coderatsmig-standard-c26m0911
+      CAE: cae-coderatsmig-wp-c26m0911
       ACR: crcoderatsmigc26m0911
       DB: psql-coderatsmig-c26m0911
       STORAGE: stcoderatsmigc26m0911
@@ -82,15 +82,15 @@ jobs:
           [[ "$(git -C web-src rev-parse HEAD)" == 'db35f8c2f5fb104a47afaeaa60dad9e6e709d193' ]]
           [[ "$(az acr show --subscription "$SID" -g "$RG" -n "$ACR" --query name -o tsv --only-show-errors)" == "$ACR" ]]
           [[ "$(az postgres flexible-server show --subscription "$SID" -g "$RG" -n "$DB" --query name -o tsv --only-show-errors)" == "$DB" ]]
-          az containerapp env show --subscription "$SID" -g "$RG" -n "$CAE" \
-            --only-show-errors -o json > "$RUNNER_TEMP/standard-env-private.json"
+          url="https://management.azure.com/subscriptions/$SID/resourceGroups/$RG/providers/Microsoft.App/managedEnvironments/$CAE?api-version=2026-07-01"
+          az rest --method get --url "$url" --only-show-errors -o json > "$RUNNER_TEMP/standard-env-private.json"
           python3 - <<'PY'
           import json,os,sys
           d=json.load(open(os.path.join(os.environ['RUNNER_TEMP'],'standard-env-private.json')))
           p=d.get('properties') or {}
           profiles=p.get('workloadProfiles') or []
           ok=(d.get('name')==os.environ['CAE'] and p.get('provisioningState')=='Succeeded' and
-              str(p.get('environmentMode') or '').lower() in ('','workloadprofiles') and
+              p.get('environmentMode')=='WorkloadProfiles' and
               any(isinstance(v,dict) and v.get('name')=='Consumption' for v in profiles))
           if not ok:sys.exit('::error::Destination is not the verified Standard Consumption CAE.')
           domain=str(p.get('defaultDomain') or '')
@@ -189,7 +189,7 @@ jobs:
           unset pullpass pushpass
           echo 'Separate Standard ACR pull token and one-day build token created.'
 
-      - name: Register existing empty media share in Standard environment only
+      - name: Verify pre-registered Azure Files share on true WorkloadProfiles environment
         shell: bash
         run: |
           set -euo pipefail
@@ -199,24 +199,15 @@ jobs:
             --only-show-errors -o json > "$RUNNER_TEMP/std-storages-private.json"
           python3 - <<'PY'
           import json,os,sys
-          a=json.load(open(os.path.join(os.environ['RUNNER_TEMP'],'std-storages-private.json')))
-          if any(isinstance(v,dict) and v.get('name')==os.environ['SHARE'] for v in (a if isinstance(a,list) else [])):
-              sys.exit('::error::Unexpected Standard CAE storage binding; refusing overwrite.')
+          data=json.load(open(os.path.join(os.environ['RUNNER_TEMP'],'std-storages-private.json')))
+          hits=[v for v in data if isinstance(v,dict) and v.get('name')==os.environ['SHARE']] if isinstance(data,list) else []
+          share=(hits[0].get('properties') or {}).get('azureFile') or {} if len(hits)==1 else {}
+          good=(len(hits)==1 and share.get('accountName')==os.environ['STORAGE'] and
+                share.get('shareName')==os.environ['SHARE'] and share.get('accessMode')=='ReadWrite')
+          if not good:
+              sys.exit('::error::Verified WorkloadProfiles Azure Files binding absent or mismatched; refusing deployment.')
+          print('Existing target-only media binding verified; no storage changes or private files read.')
           PY
-          key="$(az storage account keys list --subscription "$SID" -g "$RG" \
-            -n "$STORAGE" --query '[0].value' -o tsv --only-show-errors)"
-          [[ -n "$key" ]] || { echo '::error::Destination media storage key unavailable.'; exit 1; }
-          echo "::add-mask::$key"
-          if ! az containerapp env storage set --subscription "$SID" -g "$RG" -n "$CAE" \
-            --storage-name "$SHARE" --access-mode ReadWrite \
-            --azure-file-account-name "$STORAGE" --azure-file-account-key "$key" \
-            --azure-file-share-name "$SHARE" --only-show-errors -o none \
-            > "$RUNNER_TEMP/std-media-private.log" 2>&1; then
-            echo '::error::Standard destination Azure Files link failed. Private CLI error suppressed.'
-            exit 1
-          fi
-          unset key
-          echo 'Azure Files bound to Standard CAE. No media content accessed.'
 
       - name: Create Standard private Grader (isolated empty DB)
         shell: bash

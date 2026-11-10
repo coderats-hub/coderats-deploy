@@ -7,9 +7,6 @@ on:
         description: "Type BIND_TARGET_STANDARD_MEDIA"
         required: true
         type: string
-  push:
-    branches: [main]
-    paths: [".github/workflows/bind-migration-target-standard-media.yml"]
 
 permissions:
   contents: read
@@ -24,8 +21,7 @@ jobs:
     if: >-
       github.repository == 'coderats-hub/coderats-deploy' &&
       github.ref == 'refs/heads/main' &&
-      ((github.event_name == 'workflow_dispatch' && inputs.confirmation == 'BIND_TARGET_STANDARD_MEDIA') ||
-       (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'ci(migration): bind verified workloadprofiles media once')))
+      github.event_name == 'workflow_dispatch' && inputs.confirmation == 'BIND_TARGET_STANDARD_MEDIA'
     runs-on: ubuntu-latest
     environment: migration-target
     timeout-minutes: 25

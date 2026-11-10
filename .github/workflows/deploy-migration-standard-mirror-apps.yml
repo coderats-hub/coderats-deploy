@@ -7,9 +7,6 @@ on:
         description: "Type DEPLOY_STANDARD_MIRROR to initialize isolated Web API Grader"
         required: true
         type: string
-  push:
-    branches: [main]
-    paths: [".github/workflows/deploy-migration-standard-mirror-apps.yml"]
 
 permissions:
   contents: read
@@ -24,8 +21,7 @@ jobs:
     if: >-
       github.repository == 'coderats-hub/coderats-deploy' &&
       github.ref == 'refs/heads/main' &&
-      ((github.event_name == 'workflow_dispatch' && inputs.confirmation == 'DEPLOY_STANDARD_MIRROR') ||
-       (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'ci(migration): deploy verified workloadprofiles mirror once')))
+      github.event_name == 'workflow_dispatch' && inputs.confirmation == 'DEPLOY_STANDARD_MIRROR'
     runs-on: ubuntu-latest
     environment: migration-target
     timeout-minutes: 90

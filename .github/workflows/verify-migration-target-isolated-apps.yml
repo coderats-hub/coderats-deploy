@@ -294,6 +294,25 @@ jobs:
                       if result:code=result.group(1)
                   failed.append(code)
                   if is_standard: std_failed.append(code)
+          standard_storage=[a for a in matched if '/managedenvironments/cae-coderatsmig-standard-c26m0911/' in str(a.get('resourceId','')).lower()]
+          standard_status={}
+          standard_codes=[]
+          for a in standard_storage:
+              st=a.get('status') or {}
+              val=st.get('value','Other') if isinstance(st,dict) else str(st)
+              val=val if val in ('Failed','Started','Succeeded','Accepted') else 'Other'
+              standard_status[val]=standard_status.get(val,0)+1
+              if val=='Failed':
+                  p=a.get('properties') or {}
+                  msg=p.get('statusMessage','') if isinstance(p,dict) else ''
+                  try: detail=json.loads(msg) if isinstance(msg,str) else msg
+                  except (ValueError,TypeError): detail={}
+                  code='Unclassified'
+                  if isinstance(detail,dict):
+                      for node in (detail.get('error'), detail):
+                          if isinstance(node,dict) and isinstance(node.get('code'),str) and re.fullmatch(r'[A-Za-z][A-Za-z0-9_]{1,48}',node['code']):
+                              code=node['code'];break
+                  standard_codes.append(code)
           env_states={}
           env_codes=[]
           for a in env_events:
@@ -320,6 +339,9 @@ jobs:
               f.write('- Target Standard CAE ARM create/write events (last 3h): '+str(len(env_events))+'\n')
               f.write('- Target Standard CAE ARM statuses: '+(', '.join(k+':'+str(v) for k,v in sorted(env_states.items())) if env_states else 'none')+'\n')
               f.write('- Target Standard CAE ARM failure classes: '+(', '.join(sorted(set(env_codes))) if env_codes else 'none observed')+'\n')
+              f.write('- Standard CAE Azure Files binding ARM events: '+str(len(standard_storage))+'\n')
+              f.write('- Standard CAE Azure Files statuses: '+(', '.join(k+':'+str(v) for k,v in sorted(standard_status.items())) if standard_status else 'none')+'\n')
+              f.write('- Standard CAE Azure Files failure classes: '+(', '.join(sorted(set(standard_codes))) if standard_codes else 'none observed')+'\n')
           with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:
               f.write('- Azure ARM storage write events observed (last 3h): '+str(len(matched))+'\n')
               f.write('- ARM statuses: '+(', '.join(k+':'+str(v) for k,v in sorted(groups.items())) if groups else 'none')+'\n')

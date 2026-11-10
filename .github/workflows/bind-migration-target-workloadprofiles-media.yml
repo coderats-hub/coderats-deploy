@@ -1,0 +1,149 @@
+name: Bind Azure Files to verified WorkloadProfiles CAE (target only)
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "Type BIND_TARGET_STANDARD_MEDIA"
+        required: true
+        type: string
+  push:
+    branches: [main]
+    paths: [".github/workflows/bind-migration-target-workloadprofiles-media.yml"]
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: coderats-migration-target-wp-media-bind
+  cancel-in-progress: false
+
+jobs:
+  bind:
+    if: >-
+      github.repository == 'coderats-hub/coderats-deploy' &&
+      github.ref == 'refs/heads/main' &&
+      ((github.event_name == 'workflow_dispatch' && inputs.confirmation == 'BIND_TARGET_STANDARD_MEDIA') ||
+       (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'ci(migration): bind verified workloadprofiles media once')))
+    runs-on: ubuntu-latest
+    environment: migration-target
+    timeout-minutes: 25
+    env:
+      SID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      TID: ${{ secrets.AZURE_TENANT_ID }}
+      RG: rg-coderats-migration-c26m0911
+      STANDARD_CAE: cae-coderatsmig-wp-c26m0911
+      STORAGE: stcoderatsmigc26m0911
+      SHARE: coderats-media
+
+    steps:
+      - name: Authenticate to destination Azure using OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Verify exact destination, Standard environment and existing empty-data share
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SID" == 'da3650a9-e291-43f1-ae4b-9dcc8ff84239' ]]
+          [[ "$TID" == '1cf74c7e-fcd9-46f7-8a9d-e699d3529003' ]]
+          [[ "$(az account show --query id -o tsv)" == "$SID" ]]
+          [[ "$(az account show --query tenantId -o tsv)" == "$TID" ]]
+          [[ "$(az storage account show --subscription "$SID" -g "$RG" -n "$STORAGE" --query name -o tsv --only-show-errors)" == "$STORAGE" ]]
+          [[ "$(az storage share-rm show --subscription "$SID" -g "$RG" --storage-account "$STORAGE" --name "$SHARE" --query name -o tsv --only-show-errors)" == "$SHARE" ]]
+          az containerapp env show --subscription "$SID" -g "$RG" -n "$STANDARD_CAE" -o json --only-show-errors > "$RUNNER_TEMP/standard-cae-private.json"
+          # Core CLI hides/normalizes mode metadata. Azure ARM GET is authoritative.
+          wp_url="https://management.azure.com/subscriptions/$SID/resourceGroups/$RG/providers/Microsoft.App/managedEnvironments/$STANDARD_CAE?api-version=2026-07-01"
+          az rest --method get --url "$wp_url" --only-show-errors -o json > "$RUNNER_TEMP/wp-arm-private.json"
+          python3 - <<'PY'
+          import json,os,sys
+          x=json.load(open(os.path.join(os.environ['RUNNER_TEMP'],'wp-arm-private.json')))
+          if x.get('name')!=os.environ['STANDARD_CAE'] or (x.get('properties') or {}).get('environmentMode')!='WorkloadProfiles':
+              sys.exit('::error::WorkloadProfiles not confirmed through ARM; refusing Azure Files write.')
+          print('Verified explicit WorkloadProfiles mode using destination ARM GET.')
+          PY
+          python3 - <<'PY'
+          import json,os,sys
+          d=json.load(open(os.path.join(os.environ['RUNNER_TEMP'],'standard-cae-private.json')))
+          p=d.get('properties') or {}
+          mode=str(p.get('environmentMode','')).lower()
+          profiles=p.get('workloadProfiles') or []
+          consumption=any(isinstance(x,dict) and (x.get('name')=='Consumption' or x.get('workloadProfileType')=='Consumption') for x in profiles)
+          if d.get('name')!=os.environ['STANDARD_CAE'] or p.get('provisioningState')!='Succeeded' or not consumption or (mode and mode!='workloadprofiles'):
+              sys.exit('::error::Target Standard Consumption environment not verified; refusing to touch storage.')
+          if not str(p.get('defaultDomain','')).endswith('.brazilsouth.azurecontainerapps.io'):
+              sys.exit('::error::Target Standard CAE region/domain mismatch.')
+          print('Destination Standard CAE and existing media share verified; no file contents accessed.')
+          PY
+
+      - name: Register only the expected share or verify an existing exact binding
+        shell: bash
+        run: |
+          set -euo pipefail
+          az containerapp env storage list --subscription "$SID" -g "$RG" -n "$STANDARD_CAE" \
+            --only-show-errors -o json > "$RUNNER_TEMP/storage-before-private.json"
+          state="$(python3 - <<'PY'
+          import json,os
+          d=json.load(open(os.path.join(os.environ['RUNNER_TEMP'],'storage-before-private.json')))
+          if not isinstance(d,list): print('conflict')
+          else:
+              m=[x for x in d if isinstance(x,dict) and x.get('name')==os.environ['SHARE']]
+              if not m: print('absent')
+              elif len(m)!=1: print('conflict')
+              else:
+                  f=(m[0].get('properties') or {}).get('azureFile') or {}
+                  print('existing' if f.get('accountName')==os.environ['STORAGE'] and f.get('shareName')==os.environ['SHARE'] and f.get('accessMode')=='ReadWrite' else 'conflict')
+          PY
+          )"
+          case "$state" in
+            existing) echo 'Existing target-only AzureFile binding is correctly configured.' ;;
+            absent)
+              key="$(az storage account keys list --subscription "$SID" -g "$RG" -n "$STORAGE" --query '[0].value' -o tsv --only-show-errors)"
+              [[ -n "$key" ]] || { echo '::error::Destination storage key not available.'; exit 1; }
+              echo "::add-mask::$key"
+              if ! az containerapp env storage set --subscription "$SID" -g "$RG" -n "$STANDARD_CAE" \
+                --storage-name "$SHARE" --access-mode ReadWrite \
+                --azure-file-account-name "$STORAGE" --azure-file-account-key "$key" --azure-file-share-name "$SHARE" \
+                --only-show-errors -o none > "$RUNNER_TEMP/bind-private.log" 2>&1; then
+                echo '::error::Standard CAE Azure Files registration failed (raw Azure response suppressed).'
+                exit 1
+              fi
+              unset key
+              echo 'Azure Files registered in the isolated Standard CAE.' ;;
+            *) echo '::error::Conflicting Standard CAE storage registration; refusing overwrite.'; exit 1 ;;
+          esac
+
+      - name: Verify exact Standard storage binding without reading files
+        shell: bash
+        run: |
+          set -euo pipefail
+          az containerapp env storage list --subscription "$SID" -g "$RG" -n "$STANDARD_CAE" \
+            --only-show-errors -o json > "$RUNNER_TEMP/storage-after-private.json"
+          python3 - <<'PY'
+          import json,os,sys
+          data=json.load(open(os.path.join(os.environ['RUNNER_TEMP'],'storage-after-private.json')))
+          matches=[x for x in data if isinstance(x,dict) and x.get('name')==os.environ['SHARE']] if isinstance(data,list) else []
+          f=(matches[0].get('properties') or {}).get('azureFile') or {} if len(matches)==1 else {}
+          ok=len(matches)==1 and f.get('accountName')==os.environ['STORAGE'] and f.get('shareName')==os.environ['SHARE'] and f.get('accessMode')=='ReadWrite'
+          if not ok: sys.exit('::error::Standard CAE does not contain the expected media share binding.')
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as out:
+              out.write('### Standard CAE storage binding verified\n')
+              out.write('- Azure Files registered in new Standard CAE: true\n')
+              out.write('- Exact storage/share/read-write mode: verified\n')
+              out.write('- Existing Express Web, API and Grader: not modified\n')
+              out.write('- No application volumes mounted or database rows accessed\n')
+              out.write('- Original DEV and DNS: untouched\n')
+          print('Target Standard Azure Files binding verified (no file names or secrets emitted).')
+          PY
+
+      - name: Clear temporary credentials and private diagnostics
+        if: always()
+        shell: bash
+        run: |
+          rm -f "$RUNNER_TEMP/wp-arm-private.json" "$RUNNER_TEMP/standard-cae-private.json" "$RUNNER_TEMP/storage-before-private.json" \
+            "$RUNNER_TEMP/storage-after-private.json" "$RUNNER_TEMP/bind-private.log"
+          az logout -o none >/dev/null 2>&1 || true

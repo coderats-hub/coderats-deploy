@@ -25,7 +25,7 @@ jobs:
       github.repository == 'coderats-hub/coderats-deploy' &&
       github.ref == 'refs/heads/main' &&
       ((github.event_name == 'workflow_dispatch' && inputs.confirmation == 'CREATE_TRUE_STANDARD_CAE') ||
-       (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'ci(migration): create verified workloadprofiles cae once')))
+       (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'ci(migration): create workloadprofiles cae via explicit extension')))
     runs-on: ubuntu-latest
     environment: migration-target
     timeout-minutes: 40
@@ -90,24 +90,26 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          import json,os
-          body={
-              'location':os.environ['LOCATION'],
-              'tags':{'project':'coderats','environment':'migration-target','purpose':'standard-workloadprofiles'},
-              'properties':{
-                  'environmentMode':'WorkloadProfiles',
-                  'appLogsConfiguration':{'destination':'none'},
-                  'workloadProfiles':[{'name':'Consumption','workloadProfileType':'Consumption'}]
-              }
-          }
-          with open(os.path.join(os.environ['RUNNER_TEMP'],'workloadprofiles-request-private.json'),'w') as f:
-              json.dump(body,f)
-          PY
-          url="https://management.azure.com/subscriptions/$SID/resourceGroups/$RG/providers/Microsoft.App/managedEnvironments/$NEW_CAE?api-version=$API_VERSION"
-          if ! az rest --method put --url "$url" \
-            --body @"$RUNNER_TEMP/workloadprofiles-request-private.json" \
-            --headers Content-Type=application/json --only-show-errors -o none \
+          # Core CLI may create Express even with --enable-workload-profiles.
+          # Install the Container Apps extension and require its explicit mode.
+          if ! az extension add --name containerapp --upgrade --only-show-errors \
+            > "$RUNNER_TEMP/containerapp-extension-private.log" 2>&1; then
+            echo '::error::Container Apps extension installation failed; no Azure resource created.'
+            exit 1
+          fi
+          if ! az containerapp env create --help > "$RUNNER_TEMP/cae-options-private.txt" 2>/dev/null; then
+            echo '::error::Cannot inspect Container Apps extension CLI options.'
+            exit 1
+          fi
+          if ! grep -Fq -- '--environment-mode' "$RUNNER_TEMP/cae-options-private.txt" ||
+             ! grep -Fq -- '--logs-destination' "$RUNNER_TEMP/cae-options-private.txt"; then
+            echo '::error::Azure CLI does not offer explicit environment-mode/logs options; refusing default Express creation.'
+            exit 1
+          fi
+          echo 'Explicit CLI environmentMode option verified.'
+          if ! az containerapp env create --subscription "$SID" -g "$RG" -n "$NEW_CAE" \
+            --location "$LOCATION" --environment-mode WorkloadProfiles \
+            --logs-destination none --only-show-errors -o none \
             > "$RUNNER_TEMP/create-wp-private.log" 2>&1; then
             category="$(python3 - <<'PY'
           import os,re,json
@@ -115,7 +117,7 @@ jobs:
           try: raw=open(p,encoding='utf-8',errors='replace').read()[-20000:]
           except OSError: raw=''
           codes=['AuthorizationFailed','RequestDisallowedByPolicy','QuotaExceeded','SubscriptionIsOverQuota',
-                 'ExpressEnvironmentResourceNotSupported','BadRequest','Conflict','InvalidTemplate',
+                 'ExpressEnvironmentResourceNotSupported','InvalidRequestParameterWithDetails','BadRequest','Conflict','InvalidTemplate',
                  'NoRegisteredProviderFound','MissingSubscriptionRegistration','ResourceNotFound',
                  'InternalServerError','OperationNotAllowed','TooManyRequests','Forbidden']
           c=next((c for c in codes if re.search(r'(?<![A-Za-z])'+c+r'(?![A-Za-z])',raw,re.I)),'Unclassified')
@@ -126,7 +128,7 @@ jobs:
             echo "::error::Explicit destination WorkloadProfiles provisioning failed. Safe class: $category"
             exit 1
           fi
-          echo 'Explicit target WorkloadProfiles ARM provisioning submitted (not yet health-verified).'
+          echo 'Explicit WorkloadProfiles environment creation submitted via extension; ARM postcheck pending.'
 
       - name: Verify effective ARM environment mode and built-in Consumption
         shell: bash
@@ -181,5 +183,6 @@ jobs:
         run: |
           rm -f "$RUNNER_TEMP"/check-*-private.json "$RUNNER_TEMP/environment-names-private.json" \
             "$RUNNER_TEMP/workloadprofiles-request-private.json" "$RUNNER_TEMP/new-wp-private.json" \
-            "$RUNNER_TEMP/create-wp-private.log"
+            "$RUNNER_TEMP/create-wp-private.log" "$RUNNER_TEMP/cae-options-private.txt" \
+            "$RUNNER_TEMP/containerapp-extension-private.log"
           az logout -o none >/dev/null 2>&1 || true

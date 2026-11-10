@@ -59,6 +59,19 @@ jobs:
               --body '{"location":"eastus","tags":{"project":"coderats","environment":"migration-target","purpose":"terraform-state"}}' \
               --only-show-errors -o none
           fi
+          # Microsoft.Storage was NotRegistered in this newly transferred subscription.
+          # Registration is scoped explicitly to destination and is required before creating storage.
+          state="$(az provider show --namespace Microsoft.Storage --subscription "$TARGET_SUBSCRIPTION_ID" --query registrationState -o tsv --only-show-errors)"
+          echo "Microsoft.Storage registration state before bootstrap: $state"
+          if [[ "$state" != "Registered" ]]; then
+            az provider register --namespace Microsoft.Storage --subscription "$TARGET_SUBSCRIPTION_ID" --wait --only-show-errors -o none
+          fi
+          state="$(az provider show --namespace Microsoft.Storage --subscription "$TARGET_SUBSCRIPTION_ID" --query registrationState -o tsv --only-show-errors)"
+          [[ "$state" == "Registered" ]] || {
+            echo "::error::Microsoft.Storage is not Registered in the target subscription."
+            exit 1
+          }
+          echo "Microsoft.Storage is Registered in the destination."
           echo "Inspecting destination Terraform state storage account..."
           if az storage account show --subscription "$TARGET_SUBSCRIPTION_ID" -n "$storage" -g "$group" \
              --query name -o tsv --only-show-errors >/dev/null 2>&1; then

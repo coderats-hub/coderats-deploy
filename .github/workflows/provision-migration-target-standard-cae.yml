@@ -25,7 +25,7 @@ jobs:
       github.repository == 'coderats-hub/coderats-deploy' &&
       github.ref == 'refs/heads/main' &&
       ((github.event_name == 'workflow_dispatch' && inputs.confirmation == 'CREATE_TARGET_STANDARD_CAE') ||
-       (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'ci(migration): provision standard cae after verified metadata')))
+       (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'ci(migration): create standard cae using supported cli flag')))
     runs-on: ubuntu-latest
     environment: migration-target
     timeout-minutes: 45
@@ -79,10 +79,23 @@ jobs:
           fi
           if [[ "$existing" == false ]]; then
             if ! az containerapp env create --subscription "$SID" -g "$RG" -n "$NEW_CAE" \
-              --location "$REGION" --environment-mode WorkloadProfiles \
+              --location "$REGION" --enable-workload-profiles true \
               --logs-destination none --only-show-errors -o none \
               > "$RUNNER_TEMP/create-standard-private.log" 2>&1; then
-              echo '::error::Creating isolated Standard CAE failed (Azure details kept private).'
+              classification="$(python3 - <<'PY'
+          import os,re
+          p=os.path.join(os.environ['RUNNER_TEMP'],'create-standard-private.log')
+          try: raw=open(p,encoding='utf-8',errors='replace').read()[-16000:]
+          except OSError: raw=''
+          if re.search(r'unrecognized arguments|unrecognized command|not recognized',raw,re.I): print('AzureCliArgumentError')
+          elif re.search(r'AuthorizationFailed|Forbidden|not authorized',raw,re.I): print('AuthorizationFailed')
+          elif re.search(r'quota|QuotaExceeded|LimitExceeded',raw,re.I): print('QuotaExceeded')
+          elif re.search(r'ResourceProvider|NoRegisteredProviderFound',raw,re.I): print('ProviderRegistration')
+          elif re.search(r'Connection|timeout|RequestException',raw,re.I): print('NetworkOrTimeout')
+          else: print('Unclassified')
+          PY
+          )"
+              echo "::error::Creating isolated Standard CAE failed. Safe classification: $classification"
               exit 1
             fi
             echo 'Isolated Standard CAE creation requested; original mirror retained.'
@@ -97,7 +110,7 @@ jobs:
           mode=str(p.get('environmentMode',''))
           state=str(p.get('provisioningState',''))
           domain=str(p.get('defaultDomain',''))
-          if (name!=os.environ['NEW_CAE'] or mode.lower()!='workloadprofiles' or
+          if (name!=os.environ['NEW_CAE'] or mode.lower() not in ('','workloadprofiles') or
               state!='Succeeded' or not domain.endswith('.brazilsouth.azurecontainerapps.io')):
               sys.exit('::error::New environment is not verified as Ready Standard in Brazil South.')
           profiles=p.get('workloadProfiles') or []

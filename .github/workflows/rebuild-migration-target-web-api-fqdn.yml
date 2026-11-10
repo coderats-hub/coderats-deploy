@@ -1,4 +1,4 @@
-name: Rebuild isolated Web with documented private API FQDN (target-only)
+name: Rebuild isolated Web with TLS to private API (target-only)
 
 on:
   workflow_dispatch:
@@ -38,7 +38,7 @@ jobs:
       ACR: crcoderatsmigc26m0911
       API: ca-coderatsmig-api-c26m0911
       WEB: ca-coderatsmig-web-c26m0911
-      IMG: crcoderatsmigc26m0911.azurecr.io/web-coderats-base:mirror-internal-fqdn-db35f8c2f5fb
+      IMG: crcoderatsmigc26m0911.azurecr.io/web-coderats-base:mirror-internal-https-db35f8c2f5fb
     steps:
       - name: Check target-only GitHub App access
         shell: bash
@@ -178,7 +178,7 @@ jobs:
           # change alone cannot fix the existing short-name DNS failure.
           if ! docker build -f web-src/Dockerfile \
               --build-arg "NEXT_PUBLIC_API_URL=$WEB_PUBLIC_ORIGIN" \
-              --build-arg "API_PROXY_TARGET=http://$API_INTERNAL_FQDN" \
+              --build-arg "API_PROXY_TARGET=https://$API_INTERNAL_FQDN" \
               -t "$IMG" web-src > "$log" 2>&1; then
             echo "::error::Pinned Web build failed; private build log withheld."
             exit 1
@@ -187,43 +187,7 @@ jobs:
             echo "::error::Pinned Web push to target ACR failed; private build log withheld."
             exit 1
           fi
-          echo "New Web image with exact internal API FQDN built and pushed to target ACR."
-
-      - name: Ensure Web has independent read-only registry credentials for the new revision
-        shell: bash
-        run: |
-          set -euo pipefail
-          token="coderats-mirror-web-internal-pull"
-          log="$RUNNER_TEMP/web-internal-pull-private.log"
-          if ! az acr token show --subscription "$SID" --registry "$ACR" --name "$token" \
-              --query name --only-show-errors -o tsv >/dev/null 2>&1; then
-            if ! az acr token create --subscription "$SID" --registry "$ACR" \
-                --name "$token" --scope-map _repositories_pull --only-show-errors -o none > "$log" 2>&1; then
-              echo "::error::Web read-only pull token creation failed; private Azure output withheld."
-              exit 1
-            fi
-          fi
-          if ! az acr token update --subscription "$SID" --registry "$ACR" \
-              --name "$token" --status enabled --only-show-errors -o none > "$log" 2>&1; then
-            echo "::error::Web read-only pull token enable failed; private Azure output withheld."
-            exit 1
-          fi
-          if ! pullpass="$(az acr token credential generate --subscription "$SID" \
-              --registry "$ACR" --name "$token" --password1 --expiration-in-days 30 \
-              --query 'passwords[0].value' --only-show-errors -o tsv 2>"$log")"; then
-            echo "::error::Web read-only pull token credential generation failed; private Azure output withheld."
-            exit 1
-          fi
-          [[ -n "$pullpass" ]] || { echo "::error::Web pull credential empty."; exit 1; }
-          echo "::add-mask::$pullpass"
-          if ! az containerapp registry set --subscription "$SID" -g "$RG" -n "$WEB" \
-              --server "$ACR.azurecr.io" --username "$token" --password "$pullpass" \
-              --only-show-errors -o none > "$log" 2>&1; then
-            echo "::error::Azure Container Apps Web registry set failed; stopping before image change."
-            exit 1
-          fi
-          unset pullpass
-          echo "Dedicated 30-day read-only ACR pull authentication installed on target Web."
+          echo "New Web image with HTTPS private API origin built and pushed to target ACR."
 
       - name: Create a single Web revision with exact image and private API proxy together
         shell: bash
@@ -233,10 +197,14 @@ jobs:
             --query properties.template.containers[0].image -o tsv --only-show-errors)"
           old="$ACR.azurecr.io/web-coderats-base:mirror-db35f8c2f5fb"
           previous="$ACR.azurecr.io/web-coderats-base:mirror-dnsfix-db35f8c2f5fb"
-          [[ "$current" == "$old" || "$current" == "$previous" || "$current" == "$IMG" ]] || {
+          intermediate="$ACR.azurecr.io/web-coderats-base:mirror-internal-fqdn-db35f8c2f5fb"
+          [[ "$current" == "$old" || "$current" == "$previous" || "$current" == "$intermediate" || "$current" == "$IMG" ]] || {
             echo "::error::Unexpected target Web image; refusing to overwrite."
             exit 1
           }
+          # Preserve existing working target ACR pull authentication; do NOT call
+          # az containerapp registry set, which was rejected by ARM while the
+          # private image itself was successfully pulled and running.
           # A fresh revision avoids the two separate ARM updates that previously
           # produced Failed provisioning while keeping the old Web reachable.
           if [[ "$current" == "$IMG" ]]; then
@@ -253,7 +221,7 @@ jobs:
           logfile="$RUNNER_TEMP/web-internal-revision-private.log"
           if ! az containerapp revision copy --subscription "$SID" -g "$RG" -n "$WEB" \
               --from-revision "$base_rev" --image "$IMG" \
-              --set-env-vars "API_PROXY_TARGET=http://$API_INTERNAL_FQDN" \
+              --set-env-vars "API_PROXY_TARGET=https://$API_INTERNAL_FQDN" \
               --min-replicas 1 --max-replicas 1 \
               --only-show-errors -o none > "$logfile" 2>&1; then
             python3 - "$logfile" <<'PY'
@@ -317,7 +285,7 @@ jobs:
             echo "- Web /health: HTTP $health (200 expected)"
             echo "- Proxied /api/v1/auth/me: HTTP $proxy (401 expected without session)"
             echo "- User data and OAuth credentials not imported"
-            echo "- Web managed identity remains deferred; separate read-only ACR pull token has 30-day TTL"
+            echo "- Web managed identity remains deferred; existing ACR pull configuration unchanged"
           } >> "$GITHUB_STEP_SUMMARY"
           [[ "$health" == "200" && "$proxy" == "401" ]] || {
             echo "::error::Web or API proxy health does not match expected HTTP status; investigate sanitized logs before retrying."
@@ -336,6 +304,5 @@ jobs:
           rm -rf web-src
           rm -f "$RUNNER_TEMP"/acr-dns-token-private.log "$RUNNER_TEMP"/acr-build-login-private.log \
             "$RUNNER_TEMP"/web-dns-build-private.log "$RUNNER_TEMP"/web-internal-revision-private.log \
-            "$RUNNER_TEMP"/web-internal-pull-private.log \
             "$RUNNER_TEMP"/target-web-revisions.json
           az logout --output none >/dev/null 2>&1 || true

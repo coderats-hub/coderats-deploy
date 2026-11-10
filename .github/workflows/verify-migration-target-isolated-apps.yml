@@ -131,9 +131,11 @@ jobs:
             -o json --only-show-errors > "$RUNNER_TEMP/database-private.json"
           if az postgres flexible-server firewall-rule list --subscription "$SID" -g "$RG" --server-name "$DB" \
               --only-show-errors -o json > "$RUNNER_TEMP/firewall-private.json" 2>/dev/null; then
-            echo "FIREWALL_QUERY_OK=true" >> "$GITHUB_ENV"
+            # Same-step Python reads the process environment, not GITHUB_ENV
+            # (which GitHub Actions applies only to later steps).
+            export FIREWALL_QUERY_OK=true
           else
-            echo "FIREWALL_QUERY_OK=false" >> "$GITHUB_ENV"
+            export FIREWALL_QUERY_OK=false
             echo '[]' > "$RUNNER_TEMP/firewall-private.json"
           fi
           az containerapp job list --subscription "$SID" -g "$RG" \

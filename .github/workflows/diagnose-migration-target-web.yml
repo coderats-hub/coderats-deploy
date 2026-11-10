@@ -228,6 +228,119 @@ jobs:
           cat "$GITHUB_STEP_SUMMARY"
           rm -f "$RUNNER_TEMP/mirror-region-quota.json"
 
+      - name: Inspect correlation IDs and nested ARM failure codes without raw error messages
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SID" == "da3650a9-e291-43f1-ae4b-9dcc8ff84239" ]]
+          [[ "$TID" == "1cf74c7e-fcd9-46f7-8a9d-e699d3529003" ]]
+          [[ "$(az account show --query id -o tsv)" == "$SID" ]]
+          file="$RUNNER_TEMP/mirror-web-arm-correlation.json"
+          if az monitor activity-log list --subscription "$SID" --resource-group "$RG" \
+              --offset 24h --max-events 300 --only-show-errors -o json > "$file" 2>/dev/null; then
+            python3 - <<'PY'
+          import json,os,re
+          p=os.path.join(os.environ["RUNNER_TEMP"],"mirror-web-arm-correlation.json")
+          rows=json.load(open(p))
+          if not isinstance(rows,list): rows=[]
+          web="/providers/microsoft.app/containerapps/"+os.environ["WEB"].casefold()
+          uuid=re.compile(r"^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$",re.I)
+          codepat=re.compile(r"^[a-z][a-z0-9_.-]{1,80}$",re.I)
+          matches=[]
+          def state(v):
+              if isinstance(v,dict): v=v.get("value","")
+              s=str(v)
+              return s if re.fullmatch(r"[a-z][a-z0-9_-]{1,36}",s,re.I) else "unavailable"
+          def nested_codes(obj):
+              result=[]
+              if isinstance(obj,dict):
+                  for k,v in obj.items():
+                      if k=="code" and isinstance(v,str) and codepat.fullmatch(v):
+                          result.append(v)
+                      elif isinstance(v,(dict,list)):
+                          result.extend(nested_codes(v))
+              elif isinstance(obj,list):
+                  for v in obj: result.extend(nested_codes(v))
+              return list(dict.fromkeys(result))[:8]
+          for x in rows:
+              res=str(x.get("resourceId") or x.get("resourceUri") or "").casefold()
+              if not (res.endswith(web) or res.endswith(web+"/write")): continue
+              prop=x.get("properties") or {}
+              msg=prop.get("statusMessage") or ""
+              try: obj=json.loads(msg) if isinstance(msg,str) else msg
+              except (ValueError,TypeError): obj={}
+              if not isinstance(obj,(dict,list)): obj={}
+              codes=nested_codes(obj)
+              raw=str(msg).casefold()
+              categories={
+                "quota":("quota","limit reached","maximum allowed cores","subscriptioncores"),
+                "regional-capacity":("insufficient capacity","regional allocation","capacity exhausted"),
+                "image":("imagepull","image pull","manifest unknown","image not found"),
+                "registry-access":("registry","acr pull","acrpull","unauthorized"),
+                "policy":("policy","disallowed","allowed locations"),
+                "network":("vnet","subnet","network","ingress","dns"),
+                "managed-identity":("managedidentity","userassignedidentity","identity"),
+                "resource-conflict":("conflict","already exists"),
+                "invalid-input":("invalid","parameter","malformed","validation"),
+              }
+              hints=[k for k,terms in categories.items() if any(t in raw for t in terms)]
+              event=x.get("eventTimestamp","")
+              event=event[:19] if re.fullmatch(r"[0-9TZ:.-]{19,40}",str(event)) else "unknown"
+              corr=x.get("correlationId","")
+              corr=corr if isinstance(corr,str) and uuid.fullmatch(corr) else "not-available"
+              event_id=x.get("eventDataId","")
+              event_id=event_id if isinstance(event_id,str) and uuid.fullmatch(event_id) else "not-available"
+              op=x.get("operationName") or {}
+              op=op.get("value","") if isinstance(op,dict) else op
+              op="containerApps/write" if str(op).casefold()=="microsoft.app/containerapps/write" else "other"
+              matches.append({"time":event,"status":state(x.get("status")),"sub":state(x.get("subStatus")),
+                              "op":op,"corr":corr,"event_id":event_id,"codes":codes,"hints":hints})
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:
+              f.write("### Web provisioning failures: target ARM correlation IDs\n")
+              f.write("- This summary contains **only** codes, UUID correlation IDs and coarse categories; no raw messages or secrets\n")
+              if not matches: f.write("- No Web-specific events visible in the 24-hour query window\n")
+              for x in sorted(matches,key=lambda x:x["time"])[-15:]:
+                  f.write("- "+x["time"]+" | status="+x["status"]+" | sub="+x["sub"]+
+                          " | operation="+x["op"]+" | correlationId="+x["corr"]+
+                          " | eventDataId="+x["event_id"]+" | nestedCodes="+
+                          (",".join(x["codes"]) or "none")+" | matchedHints="+
+                          (",".join(x["hints"]) or "none")+"\n")
+          PY
+            cat "$GITHUB_STEP_SUMMARY"
+          else
+            echo "ARM correlation query unavailable (no raw logs emitted)." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          rm -f "$file"
+
+      - name: Inspect ARM provider and resource-group deployment failure metadata (read-only)
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SID" == "da3650a9-e291-43f1-ae4b-9dcc8ff84239" ]]
+          reg="$(az provider show -n Microsoft.App --subscription "$SID" --query registrationState -o tsv --only-show-errors 2>/dev/null || true)"
+          [[ "$reg" =~ ^[A-Za-z]{2,30}$ ]] || reg="unavailable"
+          echo "- Microsoft.App provider registration: $reg" >> "$GITHUB_STEP_SUMMARY"
+          envstate="$(az containerapp env show -g "$RG" -n "$CAE" --subscription "$SID" --query properties.provisioningState -o tsv --only-show-errors 2>/dev/null || true)"
+          [[ "$envstate" =~ ^[A-Za-z]{2,30}$ ]] || envstate="unavailable"
+          echo "- Target Container Apps environment provisioning: $envstate" >> "$GITHUB_STEP_SUMMARY"
+          if az deployment group list --subscription "$SID" -g "$RG" --only-show-errors -o json \
+              > "$RUNNER_TEMP/mirror-group-deployments.json" 2>/dev/null; then
+            python3 - <<'PY'
+          import json,os
+          p=os.path.join(os.environ["RUNNER_TEMP"],"mirror-group-deployments.json")
+          items=json.load(open(p))
+          if not isinstance(items,list): items=[]
+          failed=[x for x in items if (x.get("properties") or {}).get("provisioningState")=="Failed"]
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:
+              f.write("- Failed resource-group deployments currently recorded: "+str(len(failed))+"\n")
+              f.write("- No template, inputs, deployment parameters or deployment outputs collected\n")
+          PY
+          else
+            echo "- Resource-group deployment list unavailable" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          cat "$GITHUB_STEP_SUMMARY"
+          rm -f "$RUNNER_TEMP/mirror-group-deployments.json"
+
       - name: Print safe summary
         if: always()
         shell: bash

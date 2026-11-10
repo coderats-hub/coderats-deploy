@@ -37,10 +37,11 @@ jobs:
           mkdir -p "$RUNNER_TEMP/acr-probe"
           printf 'FROM mcr.microsoft.com/hello-world\n' > "$RUNNER_TEMP/acr-probe/Dockerfile"
           echo "Starting public, one-line Dockerfile build using destination ACR Tasks."
+          cd "$RUNNER_TEMP/acr-probe"
           if az acr build --registry crcoderatsmigc26m0911 --subscription "$SID" \
             --image "coderats-hello-probe:check-$GITHUB_RUN_ID" \
             --file Dockerfile --no-logs \
-            "$RUNNER_TEMP/acr-probe" > "$RUNNER_TEMP/acr-probe-output.log" 2>&1; then
+            . > "$RUNNER_TEMP/acr-probe-output.log" 2>&1; then
             echo "ACR Tasks build succeeded for a public image."
             echo "- ACR public-image quick-build: PASS" >> "$GITHUB_STEP_SUMMARY"
           else

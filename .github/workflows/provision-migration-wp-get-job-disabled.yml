@@ -1,0 +1,160 @@
+name: Provision disabled isolated GET job scaffold (target only)
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "Type CREATE_DISABLED_GET_JOB"
+        required: true
+        type: string
+  push:
+    branches: [main]
+    paths: [".github/workflows/provision-migration-wp-get-job-disabled.yml"]
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: coderats-migration-target-get-job-scaffold
+  cancel-in-progress: false
+
+jobs:
+  create:
+    if: >-
+      github.repository == 'coderats-hub/coderats-deploy' &&
+      github.ref == 'refs/heads/main' &&
+      ((github.event_name == 'workflow_dispatch' && inputs.confirmation == 'CREATE_DISABLED_GET_JOB') ||
+       (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'ci(migration): create disabled get scaffold once')))
+    runs-on: ubuntu-latest
+    environment: migration-target
+    timeout-minutes: 25
+    env:
+      SID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      TID: ${{ secrets.AZURE_TENANT_ID }}
+      RG: rg-coderats-migration-c26m0911
+      CAE: cae-coderatsmig-wp-c26m0911
+      GET_JOB: caj-coderatsmig-get-wp-c26m0911
+      # Intentionally a public no-op sample. The real API worker image and
+      # database/OAuth secrets will be added only in a separate audited change.
+      SCAFFOLD_IMAGE: mcr.microsoft.com/k8se/quickstart-jobs:latest
+
+    steps:
+      - name: Authenticate only to migration-target Azure
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Validate destination, ARM WorkloadProfiles mode and GET uniqueness
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SID" == 'da3650a9-e291-43f1-ae4b-9dcc8ff84239' ]]
+          [[ "$TID" == '1cf74c7e-fcd9-46f7-8a9d-e699d3529003' ]]
+          [[ "$(az account show --query id -o tsv)" == "$SID" ]]
+          [[ "$(az account show --query tenantId -o tsv)" == "$TID" ]]
+          url="https://management.azure.com/subscriptions/$SID/resourceGroups/$RG/providers/Microsoft.App/managedEnvironments/$CAE?api-version=2026-07-01"
+          az rest --method get --url "$url" --only-show-errors -o json > "$RUNNER_TEMP/wp-env-private.json"
+          python3 - <<'PY'
+          import json,os,sys
+          d=json.load(open(os.path.join(os.environ['RUNNER_TEMP'],'wp-env-private.json')))
+          p=d.get('properties') or {}
+          profiles=p.get('workloadProfiles') or []
+          ok=(d.get('name')==os.environ['CAE'] and
+              p.get('environmentMode')=='WorkloadProfiles' and
+              p.get('provisioningState')=='Succeeded' and
+              any(isinstance(x,dict) and x.get('name')=='Consumption' for x in profiles) and
+              str(p.get('defaultDomain','')).endswith('.brazilsouth.azurecontainerapps.io'))
+          if not ok: sys.exit('::error::Destination true WorkloadProfiles environment mismatch.')
+          print('Target environment mode and profile verified by ARM.')
+          PY
+          if az containerapp job show --subscription "$SID" -g "$RG" -n "$GET_JOB" \
+            --only-show-errors -o json > "$RUNNER_TEMP/get-before-private.json" 2>/dev/null; then
+            echo '::error::Target GET job already exists; refusing overwrite or unreviewed reconfiguration.'
+            exit 1
+          fi
+          echo 'No existing target GET job; safe to add a disabled manual scaffold.'
+
+      - name: Create inert manual GET job with no API image and no secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! az containerapp job create --subscription "$SID" -g "$RG" -n "$GET_JOB" \
+            --environment "$CAE" --workload-profile-name Consumption \
+            --trigger-type Manual --replica-timeout 600 --replica-retry-limit 0 \
+            --replica-completion-count 1 --parallelism 1 \
+            --image "$SCAFFOLD_IMAGE" --cpu 0.25 --memory 0.5Gi \
+            --env-vars "GET_WORKER_ENABLED=false" "GET_BACKFILL_ENABLED=false" \
+              "GET_BETA_ENABLED=false" "APP_RUNTIME_MODE=disabled" \
+            --only-show-errors -o none > "$RUNNER_TEMP/get-create-private.log" 2>&1; then
+            echo '::error::Destination-only disabled GET job scaffold creation failed; private details withheld.'
+            exit 1
+          fi
+          echo 'Disabled manual GET job scaffold created; no executions started.'
+
+      - name: Verify job is inert Manual trigger, no credentials, and not running
+        shell: bash
+        run: |
+          set -euo pipefail
+          az containerapp job show --subscription "$SID" -g "$RG" -n "$GET_JOB" \
+            --only-show-errors -o json > "$RUNNER_TEMP/get-after-private.json"
+          python3 - <<'PY'
+          import json,os,sys
+          d=json.load(open(os.path.join(os.environ['RUNNER_TEMP'],'get-after-private.json')))
+          p=d.get('properties') or {}
+          config=p.get('configuration') or {}
+          template=p.get('template') or {}
+          containers=template.get('containers') or []
+          c=containers[0] if len(containers)==1 else {}
+          env={x.get('name'):x.get('value') for x in c.get('env') or [] if isinstance(x,dict)}
+          identity=d.get('identity') or {}
+          registry=config.get('registries') or []
+          secrets=config.get('secrets') or []
+          good=(d.get('name')==os.environ['GET_JOB'] and
+                config.get('triggerType')=='Manual' and
+                config.get('manualTriggerConfig',{}).get('parallelism')==1 and
+                len(containers)==1 and c.get('image')==os.environ['SCAFFOLD_IMAGE'] and
+                env.get('GET_WORKER_ENABLED')=='false' and
+                env.get('GET_BACKFILL_ENABLED')=='false' and
+                env.get('GET_BETA_ENABLED')=='false' and
+                env.get('APP_RUNTIME_MODE')=='disabled' and
+                not secrets and not registry and
+                identity.get('type') in (None,'None'))
+          if not good:
+              sys.exit('::error::New GET scaffold is not the expected secretless disabled Manual job.')
+          print('Destination GET scaffold: Manual, disabled, no private credentials or worker image.')
+          PY
+          if az containerapp job execution list --subscription "$SID" -g "$RG" -n "$GET_JOB" \
+            --only-show-errors -o json > "$RUNNER_TEMP/get-executions-private.json" 2>/dev/null; then
+            python3 - <<'PY'
+          import json,os,sys
+          x=json.load(open(os.path.join(os.environ['RUNNER_TEMP'],'get-executions-private.json')))
+          if not isinstance(x,list) or x:
+              sys.exit('::error::Unexpected target GET job executions.')
+          print('Verified there are no GET job executions.')
+          PY
+          else
+            echo '::error::Could not independently verify GET job execution list.'
+            exit 1
+          fi
+          {
+            echo '### GET destination scaffold prepared'
+            echo '- True WorkloadProfiles environment and Consumption: verified'
+            echo '- GET job: Manual trigger, no schedule, no executions'
+            echo '- Worker processing flags: disabled'
+            echo '- Image: public inert sample (NOT CodeRats worker)'
+            echo '- Registry credentials, database/OAuth secrets and identity: none'
+            echo '- Source DEV, DNS, old mirrors and user data: not accessed'
+            echo '- Follow-up required: replace sample with secured API worker, verify target DB credentials and only then enable processing'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove runner-only Azure metadata and credentials
+        if: always()
+        shell: bash
+        run: |
+          rm -f "$RUNNER_TEMP/wp-env-private.json" "$RUNNER_TEMP/get-before-private.json" \
+            "$RUNNER_TEMP/get-after-private.json" "$RUNNER_TEMP/get-create-private.log" \
+            "$RUNNER_TEMP/get-executions-private.json"
+          az logout -o none >/dev/null 2>&1 || true

@@ -1,0 +1,121 @@
+name: Diagnose WorkloadProfiles CodeRats mirror (read-only)
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "Type DIAGNOSE_WP_MIRROR"
+        required: true
+        type: string
+  push:
+    branches: [main]
+    paths: [".github/workflows/diagnose-migration-wp-mirror.yml"]
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: coderats-migration-wp-readonly-diagnostics
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    if: >-
+      github.repository == 'coderats-hub/coderats-deploy' &&
+      github.ref == 'refs/heads/main' &&
+      ((github.event_name == 'workflow_dispatch' && inputs.confirmation == 'DIAGNOSE_WP_MIRROR') ||
+       (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'ci(migration): diagnose wp mirror health once')))
+    runs-on: ubuntu-latest
+    environment: migration-target
+    timeout-minutes: 15
+    env:
+      SID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      TID: ${{ secrets.AZURE_TENANT_ID }}
+      RG: rg-coderats-migration-c26m0911
+      CAE: cae-coderatsmig-wp-c26m0911
+      WEB: ca-cdmstd-web-c26m0911
+      API: ca-cdmstd-api-c26m0911
+      GRADER: ca-cdmstd-grader-c26m0911
+    steps:
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Read-only verify destination and three application revision states
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SID" == 'da3650a9-e291-43f1-ae4b-9dcc8ff84239' ]]
+          [[ "$TID" == '1cf74c7e-fcd9-46f7-8a9d-e699d3529003' ]]
+          [[ "$(az account show --query id -o tsv)" == "$SID" ]]
+          [[ "$(az account show --query tenantId -o tsv)" == "$TID" ]]
+          url="https://management.azure.com/subscriptions/$SID/resourceGroups/$RG/providers/Microsoft.App/managedEnvironments/$CAE?api-version=2026-07-01"
+          az rest --method get --url "$url" --only-show-errors -o json > "$RUNNER_TEMP/wp-env-private.json"
+          python3 - <<'PY'
+          import os,json,sys
+          d=json.load(open(os.path.join(os.environ['RUNNER_TEMP'],'wp-env-private.json')))
+          p=d.get('properties') or {}
+          if d.get('name')!=os.environ['CAE'] or p.get('environmentMode')!='WorkloadProfiles' or p.get('provisioningState')!='Succeeded':
+              sys.exit('::error::Expected WorkloadProfiles target mode/ready state not confirmed.')
+          if not str(p.get('defaultDomain') or '').endswith('.brazilsouth.azurecontainerapps.io'):
+              sys.exit('::error::WorkloadProfiles target domain unexpected.')
+          with open(os.environ['GITHUB_ENV'],'a') as f:
+              f.write('WP_DOMAIN='+str(p['defaultDomain'])+'\n')
+          print('Destination ARM mode and region verified without reading source DEV.')
+          PY
+          for label in WEB API GRADER; do
+            name="${!label}"
+            if az containerapp show --subscription "$SID" -g "$RG" -n "$name" \
+              --only-show-errors -o json > "$RUNNER_TEMP/wp-app-$label.json" 2>/dev/null; then
+              echo "$label=present" >> "$RUNNER_TEMP/app-presence.txt"
+            else
+              echo "$label=missing" >> "$RUNNER_TEMP/app-presence.txt"
+            fi
+          done
+          python3 - <<'PY'
+          import json,os
+          t=os.environ['RUNNER_TEMP']
+          found={}
+          for line in open(os.path.join(t,'app-presence.txt')):
+              k,v=line.strip().split('=',1);found[k]=v
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:
+              f.write('### Destination WorkloadProfiles mirror (read-only)\n')
+              for name in ('WEB','API','GRADER'):
+                  if found.get(name)!='present':
+                      f.write('- '+name+': missing\n')
+                      continue
+                  p=json.load(open(os.path.join(t,'wp-app-'+name+'.json'))).get('properties') or {}
+                  c=p.get('configuration') or {}
+                  template=p.get('template') or {}
+                  ready=(bool(p.get('latestRevisionName')) and p.get('latestRevisionName')==p.get('latestReadyRevisionName'))
+                  ing=c.get('ingress') or {}
+                  expected_external=name=='WEB'
+                  ingress_ok=(ing.get('external') is expected_external)
+                  volumes=template.get('volumes') or []
+                  containers=template.get('containers') or []
+                  mounts=containers[0].get('volumeMounts') or [] if containers else []
+                  azurefiles=[v for v in volumes if isinstance(v,dict) and v.get('storageType')=='AzureFile']
+                  mounted=any(m.get('volumeName')==v.get('name') for m in mounts for v in azurefiles if isinstance(m,dict))
+                  f.write('- '+name+': running='+str(p.get('runningStatus')=='Running')+
+                          ', latestReady='+str(ready)+', ingressExpected='+str(ingress_ok)+
+                          (', azureFileMounted='+str(mounted) if name=='API' else '')+'\n')
+          PY
+          web="https://$WEB.$WP_DOMAIN"
+          health="$(curl -sS -o /dev/null --max-time 15 -w '%{http_code}' "$web/health" 2>/dev/null || true)"
+          auth="$(curl -sS -o /dev/null --max-time 15 -w '%{http_code}' "$web/api/v1/auth/me" 2>/dev/null || true)"
+          [[ "$health" =~ ^[0-9]{3}$ ]] || health=000
+          [[ "$auth" =~ ^[0-9]{3}$ ]] || auth=000
+          {
+            echo "- Public mirror Web /health: HTTP $health"
+            echo "- Mirror Web /api/v1/auth/me (anonymous): HTTP $auth"
+            echo "- Expected: 200 and 401 respectively"
+            echo "- No original DEV, DNS, app data, secrets or private logs accessed"
+          } >> "$GITHUB_STEP_SUMMARY"
+          cat "$GITHUB_STEP_SUMMARY"
+      - name: Delete temporary Azure app metadata
+        if: always()
+        shell: bash
+        run: |
+          rm -f "$RUNNER_TEMP"/wp-env-private.json "$RUNNER_TEMP"/wp-app-*.json "$RUNNER_TEMP"/app-presence.txt
+          az logout -o none >/dev/null 2>&1 || true

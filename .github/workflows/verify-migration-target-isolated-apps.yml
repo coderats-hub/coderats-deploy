@@ -166,6 +166,55 @@ jobs:
           PY
           cat "$GITHUB_STEP_SUMMARY"
 
+      - name: Verify target media share and API mounts without listing private files
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SID" == "da3650a9-e291-43f1-ae4b-9dcc8ff84239" ]]
+          media="stcoderatsmigc26m0911"
+          if az storage account show --subscription "$SID" -g "$RG" -n "$media" \
+            --query name --only-show-errors -o tsv > "$RUNNER_TEMP/media-account-name.txt" 2>/dev/null; then
+            media_exists="$(cat "$RUNNER_TEMP/media-account-name.txt")"
+            [[ "$media_exists" == "$media" ]] || {
+              echo "::error::Unexpected target media storage identity."; exit 1;
+            }
+            echo "- Target media Storage Account: exists" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "- Target media Storage Account: query unavailable" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if az storage share-rm show --subscription "$SID" -g "$RG" \
+              --storage-account "$media" --name coderats-media \
+              --query name --only-show-errors -o tsv > "$RUNNER_TEMP/media-share-name.txt" 2>/dev/null; then
+            share="$(cat "$RUNNER_TEMP/media-share-name.txt")"
+            [[ "$share" == "coderats-media" ]] || {
+              echo "::error::Unexpected target media share identity."; exit 1;
+            }
+            echo "- Target Azure Files share coderats-media: exists" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "- Target Azure Files share coderats-media: not verified" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          az containerapp show --subscription "$SID" -g "$RG" -n "$API" \
+            --query '{volumes:properties.template.volumes,mounts:properties.template.containers[0].volumeMounts}' \
+            --only-show-errors -o json > "$RUNNER_TEMP/api-media-private.json"
+          python3 - <<'PY'
+          import json,os
+          x=json.load(open(os.path.join(os.environ["RUNNER_TEMP"],"api-media-private.json")))
+          volumes=x.get("volumes") or []
+          mounts=x.get("mounts") or []
+          # Do not reveal any storage mount paths or storage identifiers, only
+          # whether an Azure Files volume and corresponding API mount exist.
+          azure=[v for v in volumes if isinstance(v,dict) and str(v.get("storageType","")).lower()=="azurefile"]
+          mounted=any(isinstance(m,dict) and any(m.get("volumeName")==v.get("name") for v in azure) for m in mounts)
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:
+              f.write("### Target API media mount readiness (no share content accessed)\n")
+              f.write("- API declares AzureFile volume: "+str(bool(azure))+"\n")
+              f.write("- API mounts that AzureFile volume: "+str(mounted)+"\n")
+              f.write("- Media file names, contents, credentials and paths not read or printed\n")
+          PY
+          cat "$GITHUB_STEP_SUMMARY"
+          rm -f "$RUNNER_TEMP/media-account-name.txt" "$RUNNER_TEMP/media-share-name.txt" \
+            "$RUNNER_TEMP/api-media-private.json"
+
       - name: Cleanup private transient files and Azure session
         if: always()
         shell: bash

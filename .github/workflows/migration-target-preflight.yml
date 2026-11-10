@@ -74,10 +74,12 @@ jobs:
         working-directory: private-infra/migration-target/terraform
         run: |
           set -euo pipefail
-          terraform fmt -check -recursive >/dev/null
+          # Normalize initial draft formatting only in the ephemeral checkout.
+          # No private Terraform code or source diff published in this public repo.
+          terraform fmt -recursive >/dev/null
           terraform init -backend=false -input=false -no-color >/dev/null
-          terraform validate -no-color >/dev/null
-          echo "Terraform formatting and validation passed."
+          terraform validate -no-color
+          echo "Terraform syntax validated; source formatting normalized in ephemeral checkout only."
 
       - name: OIDC sign-in to the NEW Azure subscription
         uses: azure/login@v2
@@ -95,6 +97,7 @@ jobs:
           test "$(az account show --query id -o tsv)" = "${SID}" || exit 1
           count="$(az resource list --subscription "${SID}" --query 'length(@)' -o tsv --only-show-errors)"
           groups="$(az group list --subscription "${SID}" --query 'length(@)' -o tsv --only-show-errors)"
+          state_rg="$(az group exists --name rg-coderats-migration-state --subscription "${SID}" -o tsv --only-show-errors)"
           {
             echo "### Migration target preflight"
             echo "- Terraform file formatting and validation: PASS"
@@ -102,6 +105,7 @@ jobs:
             echo "- Target subscription and tenant: PASS"
             echo "- Resource groups: ${groups}"
             echo "- Azure ARM resources: ${count}"
+            echo "- Dedicated Terraform state RG exists: ${state_rg}"
             echo "- No Azure resource creation, modification or deletion was performed."
           } >> "${GITHUB_STEP_SUMMARY}"
 

@@ -341,6 +341,64 @@ jobs:
           cat "$GITHUB_STEP_SUMMARY"
           rm -f "$RUNNER_TEMP/mirror-group-deployments.json"
 
+      - name: Compare Web identity, registry state and functional app configuration (read-only)
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SID" == "da3650a9-e291-43f1-ae4b-9dcc8ff84239" ]]
+          [[ "$(az account show --query id -o tsv)" == "$SID" ]]
+          echo "### Three-identity and app configuration cross-check" >> "$GITHUB_STEP_SUMMARY"
+          for name in web api grader; do
+            id_name="id-coderatsmig-$name-c26m0911"
+            if az identity show --subscription "$SID" -g "$RG" -n "$id_name" \
+              --query '{name:name,id:id,clientId:clientId,principalId:principalId,location:location,tenantId:tenantId}' \
+              -o json --only-show-errors > "$RUNNER_TEMP/identity.json" 2>/dev/null; then
+              APP_NAME="$name" python3 - <<'PY'
+          import os,json,re
+          x=json.load(open(os.path.join(os.environ["RUNNER_TEMP"],"identity.json")))
+          n=os.environ["APP_NAME"]
+          valid=lambda s: isinstance(s,str) and bool(re.fullmatch(r"[0-9a-f-]{36}",s,re.I))
+          rg=os.environ["RG"].casefold()
+          resource=str(x.get("id","")).casefold()
+          checks={
+            "exists":True,
+            "resourceGroupMatch":("/resourcegroups/"+rg+"/" in resource),
+            "clientIdPresent":valid(x.get("clientId")),
+            "principalIdPresent":valid(x.get("principalId")),
+            "tenantIdPresent":valid(x.get("tenantId")),
+            "region":x.get("location") if x.get("location") in ("brazilsouth","eastus") else "other"
+          }
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:
+              f.write("- "+n+" identity: "+", ".join(f"{k}={v}" for k,v in checks.items())+"\n")
+          PY
+            else
+              echo "- $name managed identity could not be retrieved" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
+          for app in "$API" "$GRADER"; do
+            if az containerapp show --subscription "$SID" -g "$RG" -n "$app" \
+              --query '{identities:identity.userAssignedIdentities,registry:properties.configuration.registries,ingress:properties.configuration.ingress,template:properties.template.containers}' \
+              --only-show-errors -o json > "$RUNNER_TEMP/app-private-metadata.json" 2>/dev/null; then
+              APP_NAME="$app" python3 - <<'PY'
+          import json,os
+          x=json.load(open(os.path.join(os.environ["RUNNER_TEMP"],"app-private-metadata.json")))
+          user=x.get("identities") or {}
+          registry=x.get("registry") or []
+          containers=x.get("template") or []
+          rtypes=[]
+          for r in registry:
+              if not isinstance(r,dict): continue
+              rtypes.append("credentials" if r.get("username") else ("managedIdentity" if r.get("identity") else "none"))
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:
+              f.write("- "+os.environ["APP_NAME"]+": attached user identities="+str(len(user))+
+                      "; registry authentication="+(",".join(rtypes) or "not-configured")+
+                      "; container count="+str(len(containers))+"\n")
+          PY
+            fi
+          done
+          rm -f "$RUNNER_TEMP/identity.json" "$RUNNER_TEMP/app-private-metadata.json"
+          cat "$GITHUB_STEP_SUMMARY"
+
       - name: Print safe summary
         if: always()
         shell: bash

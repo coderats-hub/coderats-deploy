@@ -375,6 +375,86 @@ jobs:
           cat "$GITHUB_STEP_SUMMARY"
           rm -f "$RUNNER_TEMP"/arm-mode-*-private.json
 
+      - name: Read-only ARM create failure status for explicit WorkloadProfiles candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SID" == 'da3650a9-e291-43f1-ae4b-9dcc8ff84239' ]]
+          [[ "$TID" == '1cf74c7e-fcd9-46f7-8a9d-e699d3529003' ]]
+          name="cae-coderatsmig-wp-c26m0911"
+          url="https://management.azure.com/subscriptions/$SID/resourceGroups/$RG/providers/Microsoft.App/managedEnvironments/$name?api-version=2026-07-01"
+          echo '### Explicit WorkloadProfiles ARM create diagnosis (read-only)' >> "$GITHUB_STEP_SUMMARY"
+          if az rest --method get --url "$url" --only-show-errors -o json \
+            > "$RUNNER_TEMP/wp-candidate-private.json" 2>/dev/null; then
+            python3 - <<'PY'
+          import json,os
+          d=json.load(open(os.path.join(os.environ['RUNNER_TEMP'],'wp-candidate-private.json')))
+          p=d.get('properties') or {}
+          allowed=('Express','WorkloadProfiles','ConsumptionOnly','Archived')
+          m=p.get('environmentMode')
+          m=m if m in allowed else 'unreported'
+          state=p.get('provisioningState')
+          state=state if state in ('Succeeded','Failed','InProgress','Creating','Updating') else 'other'
+          profiles=p.get('workloadProfiles') or []
+          consumption=any(isinstance(x,dict) and x.get('name')=='Consumption' for x in profiles)
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:
+              f.write('- Explicit candidate ARM GET: available\n')
+              f.write('- Candidate ARM effective mode: '+m+'\n')
+              f.write('- Candidate provisioning state: '+state+'\n')
+              f.write('- Candidate Consumption profile metadata: '+str(consumption)+'\n')
+          PY
+          else
+            echo '- Explicit candidate ARM GET: unavailable (may be absent)' >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if az monitor activity-log list --subscription "$SID" --resource-group "$RG" --offset 3h \
+             --max-events 150 --only-show-errors -o json > "$RUNNER_TEMP/wp-activity-private.json" 2>/dev/null; then
+            python3 - <<'PY'
+          import json,os,re
+          src=json.load(open(os.path.join(os.environ['RUNNER_TEMP'],'wp-activity-private.json')))
+          records=src if isinstance(src,list) else []
+          events=[]
+          for a in records:
+              if not isinstance(a,dict): continue
+              op=a.get('operationName') or {}
+              name=op.get('value','') if isinstance(op,dict) else str(op)
+              rid=str(a.get('resourceId','')).lower().rstrip('/')
+              if name.lower()=='microsoft.app/managedenvironments/write' and rid.endswith('/cae-coderatsmig-wp-c26m0911'):
+                  events.append(a)
+          groups={}
+          errors=[]
+          def cls(message):
+              try: obj=json.loads(message) if isinstance(message,str) else message
+              except (ValueError,TypeError): obj={}
+              if isinstance(obj,dict):
+                  for node in (obj.get('error'),obj):
+                      if isinstance(node,dict):
+                          code=node.get('code')
+                          if isinstance(code,str) and re.fullmatch(r'[A-Za-z][A-Za-z0-9_]{1,48}',code):
+                              return code
+              raw=str(message)[:12000]
+              pattern=r'"code"\s*:\s*"([A-Za-z][A-Za-z0-9_]{1,48})"'
+              match=re.search(pattern,raw)
+              return match.group(1) if match else 'Unclassified'
+          for a in events:
+              status=a.get('status') or {}
+              status=status.get('value','Other') if isinstance(status,dict) else str(status)
+              status=status if status in ('Succeeded','Failed','Started','Accepted') else 'Other'
+              groups[status]=groups.get(status,0)+1
+              if status=='Failed':
+                  p=a.get('properties') or {}
+                  errors.append(cls(p.get('statusMessage','') if isinstance(p,dict) else ''))
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:
+              f.write('- Explicit candidate ARM write event count: '+str(len(events))+'\n')
+              f.write('- Candidate ARM statuses: '+(', '.join(k+':'+str(v) for k,v in sorted(groups.items())) if groups else 'none')+'\n')
+              f.write('- Candidate ARM failure codes: '+(', '.join(sorted(set(errors))) if errors else 'none observed')+'\n')
+              f.write('- Raw Azure error messages and identifiers were not published\n')
+          PY
+          else
+            echo '- Explicit candidate ARM activity query: unavailable' >> "$GITHUB_STEP_SUMMARY"
+          fi
+          cat "$GITHUB_STEP_SUMMARY"
+          rm -f "$RUNNER_TEMP/wp-candidate-private.json" "$RUNNER_TEMP/wp-activity-private.json"
+
       - name: Cleanup private transient files and Azure session
         if: always()
         shell: bash

@@ -155,14 +155,12 @@ jobs:
           fi
           echo "Mirror Grader image built from pinned source."
 
-      - name: Verify all three image manifests
+      - name: Record successfully completed Azure Container Registry builds
         shell: bash
         run: |
           set -euo pipefail
-          for img in "web-coderats-base:mirror-db35f8c2f5fb" "api-coderats-base:mirror-899b5e0fdd5d" "api-grader-coderats:mirror-a126b16097ef"; do
-            name="$(az acr repository show -n "$ACR" --image "$img" --query name -o tsv --only-show-errors)"
-            [[ -n "$name" ]] || exit 1
-          done
+          # az acr build already failed closed on nonzero exit. The Contributor role
+          # intentionally lacks repository data-plane read, so do not use show-tags.
           {
             echo "### CodeRats migration-target application images"
             echo "- Destination subscription: new Azure for Students (Brazil South)"

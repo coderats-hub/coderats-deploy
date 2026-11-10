@@ -250,6 +250,14 @@ jobs:
               name=op.get('value','') if isinstance(op,dict) else str(op)
               if 'microsoft.app/managedenvironments/storages/write' in name.lower():
                   matched.append(a)
+          env_events=[]
+          for a in x:
+              if not isinstance(a,dict): continue
+              op=a.get('operationName') or {}
+              name=op.get('value','') if isinstance(op,dict) else str(op)
+              resource=str(a.get('resourceId','')).lower().rstrip('/')
+              if name.lower()=='microsoft.app/managedenvironments/write' and resource.endswith('/cae-coderatsmig-standard-c26m0911'):
+                  env_events.append(a)
           failed=[]
           codes=['AuthorizationFailed','LinkedAuthorizationFailed','RequestDisallowedByPolicy',
                  'Forbidden','BadRequest','Conflict','InvalidRequestContent',
@@ -280,6 +288,32 @@ jobs:
                       result=re.search(r'"code"\s*:\s*"([A-Za-z][A-Za-z0-9_]{1,48})"',msg)
                       if result:code=result.group(1)
                   failed.append(code)
+          env_states={}
+          env_codes=[]
+          for a in env_events:
+              st=a.get('status') or {}
+              sv=st.get('value','Other') if isinstance(st,dict) else str(st)
+              sv=sv if sv in ('Started','Failed','Succeeded','Accepted') else 'Other'
+              env_states[sv]=env_states.get(sv,0)+1
+              if sv=='Failed':
+                  p=a.get('properties') or {}
+                  msg=p.get('statusMessage','') if isinstance(p,dict) else ''
+                  try:
+                      detail=json.loads(msg) if isinstance(msg,str) else msg
+                  except (ValueError,TypeError):
+                      detail={}
+                  code='Unclassified'
+                  if isinstance(detail,dict):
+                      for node in (detail.get('error'), detail):
+                          if isinstance(node,dict):
+                              c=node.get('code')
+                              if isinstance(c,str) and re.fullmatch(r'[A-Za-z][A-Za-z0-9_]{1,48}',c):
+                                  code=c;break
+                  env_codes.append(code)
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:
+              f.write('- Target Standard CAE ARM create/write events (last 3h): '+str(len(env_events))+'\n')
+              f.write('- Target Standard CAE ARM statuses: '+(', '.join(k+':'+str(v) for k,v in sorted(env_states.items())) if env_states else 'none')+'\n')
+              f.write('- Target Standard CAE ARM failure classes: '+(', '.join(sorted(set(env_codes))) if env_codes else 'none observed')+'\n')
           with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:
               f.write('- Azure ARM storage write events observed (last 3h): '+str(len(matched))+'\n')
               f.write('- ARM statuses: '+(', '.join(k+':'+str(v) for k,v in sorted(groups.items())) if groups else 'none')+'\n')

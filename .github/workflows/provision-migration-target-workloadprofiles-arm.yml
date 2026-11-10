@@ -1,0 +1,168 @@
+name: Create true WorkloadProfiles CAE via explicit ARM mode (target only)
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "Type CREATE_TRUE_WORKLOADPROFILES_TARGET for isolated new CAE"
+        required: true
+        type: string
+  push:
+    branches: [main]
+    paths: [".github/workflows/provision-migration-target-workloadprofiles-arm.yml"]
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: coderats-migration-target-true-workloadprofiles-arm
+  cancel-in-progress: false
+
+jobs:
+  provision:
+    if: >-
+      github.repository == 'coderats-hub/coderats-deploy' &&
+      github.ref == 'refs/heads/main' &&
+      ((github.event_name == 'workflow_dispatch' &&
+        inputs.confirmation == 'CREATE_TRUE_WORKLOADPROFILES_TARGET') ||
+       (github.event_name == 'push' &&
+        startsWith(github.event.head_commit.message, 'ci(migration): create true workloadprofiles arm once')))
+    runs-on: ubuntu-latest
+    environment: migration-target
+    timeout-minutes: 20
+    env:
+      SID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      TID: ${{ secrets.AZURE_TENANT_ID }}
+      RG: rg-coderats-migration-c26m0911
+      OLD: cae-coderatsmig-c26m0911
+      EXPRESS_CANDIDATE: cae-coderatsmig-standard-c26m0911
+      NEW: cae-coderatsmig-wp-c26m0911
+      API_VER: '2026-07-01'
+    steps:
+      - name: Login to destination OIDC only
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Validate target identity and observed Express modes
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SID" == 'da3650a9-e291-43f1-ae4b-9dcc8ff84239' ]]
+          [[ "$TID" == '1cf74c7e-fcd9-46f7-8a9d-e699d3529003' ]]
+          [[ "$(az account show --query id -o tsv)" == "$SID" ]]
+          [[ "$(az account show --query tenantId -o tsv)" == "$TID" ]]
+          [[ "$(az group show --subscription "$SID" -n "$RG" --query location -o tsv --only-show-errors)" == 'brazilsouth' ]]
+          for app in "$OLD" "$EXPRESS_CANDIDATE"; do
+            url="https://management.azure.com/subscriptions/$SID/resourceGroups/$RG/providers/Microsoft.App/managedEnvironments/$app?api-version=$API_VER"
+            az rest --method get --url "$url" -o json --only-show-errors > "$RUNNER_TEMP/existing-$app.json"
+            APP="$app" python3 - <<'PY'
+          import json,os,sys
+          x=json.load(open(os.path.join(os.environ['RUNNER_TEMP'],'existing-'+os.environ['APP']+'.json')))
+          if x.get('name')!=os.environ['APP'] or (x.get('properties') or {}).get('environmentMode')!='Express':
+              sys.exit('::error::Old mirror environment type differs from verified Express; abort.')
+          PY
+          done
+          url="https://management.azure.com/subscriptions/$SID/resourceGroups/$RG/providers/Microsoft.App/managedEnvironments/$NEW?api-version=$API_VER"
+          echo "NEW_RESOURCE_URL=$url" >> "$GITHUB_ENV"
+          # Do not modify any existing resource, even if a previous attempt was partial.
+          if az rest --method get --url "$url" --only-show-errors -o none > "$RUNNER_TEMP/new-exists.log" 2>&1; then
+            echo '::error::New WorkloadProfiles environment already exists; no overwrite allowed.'
+            exit 1
+          fi
+          echo 'New target resource does not exist; old Express environments verified.'
+
+      - name: Explicit ARM 2026-07-01 PUT with WorkloadProfiles mode
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json,os
+          # Explicit property is essential: --enable-workload-profiles true
+          # previously produced an Express environment despite a Consumption profile.
+          body={
+             'location':'brazilsouth',
+             'properties':{
+                 'environmentMode':'WorkloadProfiles',
+                 'appLogsConfiguration':{'destination':'none'},
+                 'workloadProfiles':[{'name':'Consumption','workloadProfileType':'Consumption'}]
+             },
+             'tags':{'coderats-purpose':'isolated-migration-workloadprofiles'}
+          }
+          with open(os.path.join(os.environ['RUNNER_TEMP'],'new-workloadprofiles-body.json'),'w') as f:
+              json.dump(body,f)
+          PY
+          if ! az rest --method put --url "$NEW_RESOURCE_URL" \
+            --headers 'Content-Type=application/json' \
+            --body @"$RUNNER_TEMP/new-workloadprofiles-body.json" \
+            --only-show-errors -o none > "$RUNNER_TEMP/arm-create-private.log" 2>&1; then
+            classification="$(python3 - <<'PY'
+          import os,re,json
+          p=os.path.join(os.environ['RUNNER_TEMP'],'arm-create-private.log')
+          raw=open(p,encoding='utf-8',errors='replace').read()[-15000:]
+          code=re.search(r'(?:"code"\s*:\s*"|\()([A-Za-z][A-Za-z0-9_]{1,48})',raw)
+          if code: print(code.group(1))
+          elif 'unrecognized arguments' in raw.lower(): print('CliArgumentError')
+          else: print('Unclassified')
+          PY
+          )"
+            echo "::error::Target-only explicit WorkloadProfiles ARM creation failed (classification: $classification)."
+            exit 1
+          fi
+          echo 'ARM WorkloadProfiles creation submitted; raw response retained only on ephemeral runner.'
+
+      - name: Require actual ARM environmentMode equals WorkloadProfiles and Consumption
+        shell: bash
+        run: |
+          set -euo pipefail
+          state=Pending
+          for attempt in $(seq 1 45); do
+            if az rest --method get --url "$NEW_RESOURCE_URL" -o json --only-show-errors \
+              > "$RUNNER_TEMP/new-mode-private.json" 2>/dev/null; then
+              state="$(python3 - <<'PY'
+          import json,os
+          d=json.load(open(os.path.join(os.environ['RUNNER_TEMP'],'new-mode-private.json')))
+          print(str((d.get('properties') or {}).get('provisioningState','Unknown')))
+          PY
+          )"
+              [[ "$state" == 'Succeeded' || "$state" == 'Failed' ]] && break
+            fi
+            sleep 8
+          done
+          if [[ "$state" != Succeeded ]]; then
+            echo "::error::New WorkloadProfiles CAE did not reach Succeeded (state class: $state)."
+            exit 1
+          fi
+          python3 - <<'PY'
+          import json,os,sys
+          d=json.load(open(os.path.join(os.environ['RUNNER_TEMP'],'new-mode-private.json')))
+          p=d.get('properties') or {}
+          mode=p.get('environmentMode')
+          profiles=p.get('workloadProfiles') or []
+          consumption=any(isinstance(v,dict) and v.get('name')=='Consumption' and v.get('workloadProfileType')=='Consumption' for v in profiles)
+          if (d.get('name')!=os.environ['NEW'] or mode!='WorkloadProfiles' or
+              not consumption or not str(p.get('defaultDomain','')).endswith('.brazilsouth.azurecontainerapps.io')):
+              print('::error::Actual ARM mode/Consumption profile does not match WorkloadProfiles target.')
+              print('Safe observed mode: '+str(mode) if mode in ('Express','WorkloadProfiles','ConsumptionOnly') else 'Safe observed mode: other')
+              sys.exit(1)
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:
+              f.write('### Verified destination WorkloadProfiles CAE\n')
+              f.write('- New resource: '+os.environ['NEW']+'\n')
+              f.write('- Explicit ARM environmentMode: WorkloadProfiles\n')
+              f.write('- Consumption profile: present\n')
+              f.write('- Provisioning state: Succeeded, region: Brazil South\n')
+              f.write('- No apps deployed, no source DEV/DNS/DB or old mirror changes\n')
+          print('New target is confirmed WorkloadProfiles via ARM, not inferred from Consumption metadata.')
+          PY
+
+      - name: Clean ephemeral ARM bodies and Azure credentials
+        if: always()
+        shell: bash
+        run: |
+          rm -f "$RUNNER_TEMP"/existing-cae-coderatsmig-*.json \
+            "$RUNNER_TEMP"/new-workloadprofiles-body.json "$RUNNER_TEMP"/new-mode-private.json \
+            "$RUNNER_TEMP"/arm-create-private.log "$RUNNER_TEMP"/new-exists.log
+          az logout -o none >/dev/null 2>&1 || true

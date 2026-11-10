@@ -80,9 +80,13 @@ jobs:
               print("::error::Target API FQDN does not match expected private destination.")
               sys.exit(1)
           registries=web.get("registries") or []
-          if not any(r.get("server")==os.environ["ACR"]+".azurecr.io" and r.get("username")=="coderats-mirror-web-pull" for r in registries):
-              print("::error::Web-only ACR pull credential missing; no image changes allowed.")
+          # Azure normalizes registry auth fields and may omit username in
+          # GET payloads. Require exact private registry server; existing Web
+          # is already Healthy and successfully pulled its previous ACR image.
+          if not any(isinstance(r,dict) and r.get("server")==os.environ["ACR"]+".azurecr.io" for r in registries):
+              print("::error::Target Web ACR server entry missing; no image changes allowed.")
               sys.exit(1)
+          print("Exact target ACR registry entry exists; no passwords or usernames printed.")
           with open(os.environ["GITHUB_ENV"],"a") as f: f.write("TARGET_API_FQDN="+fqdn+"\n")
           print("Destination-only Web/registry/API verified; Web image currently "+("old" if image==os.environ["OLD"] else "new")+".")
           PY

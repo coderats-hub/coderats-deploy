@@ -264,11 +264,16 @@ jobs:
                  'MissingSubscriptionRegistration','NoRegisteredProviderFound','ResourceNotFound',
                  'OperationNotAllowed','InternalServerError','ServiceUnavailable','TooManyRequests']
           groups={}
+          std_groups={}
+          std_failed=[]
           for a in matched:
+              resource=str(a.get('resourceId','')).lower()
+              is_standard='/managedenvironments/cae-coderatsmig-standard-c26m0911/' in resource
               status=a.get('status') or {}
               val=status.get('value','other') if isinstance(status,dict) else str(status)
               status=val if val in ('Succeeded','Failed','Started','Accepted') else 'Other'
               groups[status]=groups.get(status,0)+1
+              if is_standard: std_groups[status]=std_groups.get(status,0)+1
               if status=='Failed':
                   p=a.get('properties') or {}
                   msg=str(p.get('statusMessage',''))[:8000] if isinstance(p,dict) else ''
@@ -288,6 +293,7 @@ jobs:
                       result=re.search(r'"code"\s*:\s*"([A-Za-z][A-Za-z0-9_]{1,48})"',msg)
                       if result:code=result.group(1)
                   failed.append(code)
+                  if is_standard: std_failed.append(code)
           env_states={}
           env_codes=[]
           for a in env_events:
@@ -319,6 +325,8 @@ jobs:
               f.write('- ARM statuses: '+(', '.join(k+':'+str(v) for k,v in sorted(groups.items())) if groups else 'none')+'\n')
               f.write('- ARM failure classes: '+(', '.join(sorted(set(failed))) if failed else 'none observed')+'\n')
               f.write('- ARM failed event count: '+str(len(failed))+'\n')
+              f.write('- Standard CAE media ARM event statuses: '+(', '.join(k+':'+str(v) for k,v in sorted(std_groups.items())) if std_groups else 'none')+'\n')
+              f.write('- Standard CAE media ARM failure classes: '+(', '.join(sorted(set(std_failed))) if std_failed else 'none observed')+'\n')
               f.write('- No raw activity-log messages, credentials or storage paths published\n')
           PY
           else

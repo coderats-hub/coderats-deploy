@@ -105,6 +105,7 @@ jobs:
           if not isinstance(records,list): records=[]
           web=os.environ["WEB"].casefold()
           matches=[]
+          categories=[]
           for x in records:
               res=str(x.get("resourceId") or x.get("resourceUri") or "").casefold()
               if not (res.endswith("/containerapps/"+web) or res.endswith("/containerapps/"+web+"/write")):
@@ -128,13 +129,23 @@ jobs:
               code=code_from(payload)
               if not isinstance(code,str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{1,62}",code): code="unavailable"
               matches.append((str(x.get("eventTimestamp") or "")[:20],safe_state(status),safe_state(sub),code))
+              # Categorize only; never emit raw ARM error messages (may contain sensitive details).
+              raw_msg=str(msg).lower()
+              category="unspecified"
+              if any(w in raw_msg for w in ("quota","maximum allowed cores","limit reached")): category="quota"
+              elif any(w in raw_msg for w in ("capacity","resource not available","regional allocation")): category="capacity"
+              elif any(w in raw_msg for w in ("imagepull","image pull","manifest unknown","invalid image","image not found")): category="image-pull"
+              elif any(w in raw_msg for w in ("registry","acrpull","unauthorized")): category="registry-auth"
+              elif any(w in raw_msg for w in ("policy","disallowed","allowed locations")): category="azure-policy"
+              elif any(w in raw_msg for w in ("already exists","conflict")): category="conflict"
+              categories.append(category)
           with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:
               f.write("### Recent Web Azure Resource Manager events\n")
               if not matches: f.write("- No Web-specific ARM events found in the available four-hour window\n")
               else:
-                  for time,status,sub,code in matches[-10:]:
+                  for (time,status,sub,code),category in zip(matches[-10:],categories[-10:]):
                       t=time if re.fullmatch(r"[0-9TZ:.-]{1,20}",time) else "unknown"
-                      f.write(f"- {t}: status={status}, subStatus={sub}, errorCode={code}\n")
+                      f.write(f"- {t}: status={status}, subStatus={sub}, errorCode={code}, causeCategory={category}\n")
           PY
           else
             echo '- ARM activity event query: unavailable (no raw diagnostics exposed)' >> "$GITHUB_STEP_SUMMARY"
@@ -174,6 +185,48 @@ jobs:
           fi
           cat "$GITHUB_STEP_SUMMARY"
           rm -f "$RUNNER_TEMP/mirror-quota-data.json"
+
+      - name: Inspect regional app quotas and expected Web image tag (read-only)
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SID" == "da3650a9-e291-43f1-ae4b-9dcc8ff84239" ]]
+          if az containerapp list-usages --location brazilsouth --subscription "$SID" \
+              --only-show-errors -o json > "$RUNNER_TEMP/mirror-region-quota.json" 2>/dev/null; then
+            python3 - <<'PY'
+          import json,os,re
+          p=os.path.join(os.environ["RUNNER_TEMP"],"mirror-region-quota.json")
+          v=json.load(open(p))
+          if isinstance(v,dict): v=v.get("value",[])
+          if not isinstance(v,list): v=[]
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:
+              f.write("### Destination Container Apps regional usage\n")
+              for x in v[:40]:
+                  if not isinstance(x,dict): continue
+                  name=x.get("name",{})
+                  name=name.get("value","") if isinstance(name,dict) else name
+                  current=x.get("currentValue"); limit=x.get("limit")
+                  if not re.fullmatch(r"[A-Za-z0-9_. -]{1,65}",str(name)): continue
+                  if not isinstance(current,(float,int)) or not isinstance(limit,(float,int)): continue
+                  f.write(f"- {name}: {current}/{limit}\n")
+              if not v: f.write("- No regional quota entries returned\n")
+          PY
+          else
+            echo "- Regional Container Apps quota query unavailable" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if tag="$(az acr repository show-tags --name "$ACR" --repository web-coderats-base \
+              --subscription "$SID" --query "[?@=='mirror-db35f8c2f5fb'] | [0]" \
+              --only-show-errors -o tsv 2>/dev/null)"; then
+            if [[ "$tag" == "mirror-db35f8c2f5fb" ]]; then
+              echo "- Expected destination Web ACR tag: confirmed" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "- Expected destination Web ACR tag: not found in accessible listing" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          else
+            echo "- Expected destination Web ACR tag: registry listing unavailable under this identity" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          cat "$GITHUB_STEP_SUMMARY"
+          rm -f "$RUNNER_TEMP/mirror-region-quota.json"
 
       - name: Print safe summary
         if: always()

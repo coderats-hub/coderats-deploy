@@ -7,9 +7,6 @@ on:
         description: "Type FIX_WP_WEB_PROXY"
         required: true
         type: string
-  push:
-    branches: [main]
-    paths: [".github/workflows/repair-migration-wp-web-proxy.yml"]
 
 permissions:
   contents: read
@@ -24,8 +21,7 @@ jobs:
     if: >-
       github.repository == 'coderats-hub/coderats-deploy' &&
       github.ref == 'refs/heads/main' &&
-      ((github.event_name == 'workflow_dispatch' && inputs.confirmation == 'FIX_WP_WEB_PROXY') ||
-       (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'ci(migration): repair wp web with isolated acr token once')))
+      github.event_name == 'workflow_dispatch' && inputs.confirmation == 'FIX_WP_WEB_PROXY'
     runs-on: ubuntu-latest
     environment: migration-target
     timeout-minutes: 65

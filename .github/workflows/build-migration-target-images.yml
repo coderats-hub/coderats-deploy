@@ -1,0 +1,180 @@
+name: Build isolated CodeRats mirror application images
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [".github/workflows/build-migration-target-images.yml"]
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: coderats-migration-target-image-build
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: >-
+      github.repository == 'coderats-hub/coderats-deploy' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' ||
+       startsWith(github.event.head_commit.message, 'ci(migration): build isolated mirror images'))
+    runs-on: ubuntu-latest
+    environment: migration-target
+    timeout-minutes: 90
+    env:
+      SID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      TID: ${{ secrets.AZURE_TENANT_ID }}
+      RG: rg-coderats-migration-c26m0911
+      ACR: crcoderatsmigc26m0911
+      CAE: cae-coderatsmig-c26m0911
+    steps:
+      - name: Verify new Azure and isolated Github App settings
+        env:
+          APP_ID: ${{ vars.CODERATS_DEPLOY_APP_ID }}
+          APP_KEY: ${{ secrets.CODERATS_DEPLOY_APP_PRIVATE_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SID" == "da3650a9-e291-43f1-ae4b-9dcc8ff84239" && "$TID" == "1cf74c7e-fcd9-46f7-8a9d-e699d3529003" ]]
+          [[ -n "${APP_ID:-}" && -n "${APP_KEY:-}" ]]
+          echo "Mirror GitHub checkout and destination settings verified."
+
+      - name: Create scoped GitHub App read-only checkout token
+        id: token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.CODERATS_DEPLOY_APP_ID }}
+          private-key: ${{ secrets.CODERATS_DEPLOY_APP_PRIVATE_KEY }}
+          owner: coderats-hub
+          repositories: |
+            web-coderats-base
+            api-coderats-base
+            api-grader-coderats
+          permission-contents: read
+
+      - name: Checkout pinned Web source
+        uses: actions/checkout@v4
+        with:
+          repository: coderats-hub/web-coderats-base
+          ref: db35f8c2f5fb104a47afaeaa60dad9e6e709d193
+          path: web-src
+          token: ${{ steps.token.outputs.token }}
+          persist-credentials: false
+
+      - name: Checkout pinned API source
+        uses: actions/checkout@v4
+        with:
+          repository: coderats-hub/api-coderats-base
+          ref: 899b5e0fdd5de170fbca54b1ce017e2e8d544e24
+          path: api-src
+          token: ${{ steps.token.outputs.token }}
+          persist-credentials: false
+
+      - name: Checkout pinned Grader source
+        uses: actions/checkout@v4
+        with:
+          repository: coderats-hub/api-grader-coderats
+          ref: a126b16097ef9f9ec59becfe02da496193d38b40
+          path: grader-src
+          token: ${{ steps.token.outputs.token }}
+          persist-credentials: false
+
+      - name: Verify exact source SHAs
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$(git -C web-src rev-parse HEAD)" == "db35f8c2f5fb104a47afaeaa60dad9e6e709d193" ]]
+          [[ "$(git -C api-src rev-parse HEAD)" == "899b5e0fdd5de170fbca54b1ce017e2e8d544e24" ]]
+          [[ "$(git -C grader-src rev-parse HEAD)" == "a126b16097ef9f9ec59becfe02da496193d38b40" ]]
+          echo "Three reviewed source revisions pinned."
+
+      - name: Login to new Azure subscription only
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Verify destination registry, environment and Web origin
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$(az account show --query id -o tsv)" == "$SID" ]]
+          [[ "$(az account show --query tenantId -o tsv)" == "$TID" ]]
+          [[ "$(az acr show -g "$RG" -n "$ACR" --subscription "$SID" --query name -o tsv --only-show-errors)" == "$ACR" ]]
+          domain="$(az containerapp env show -g "$RG" -n "$CAE" --subscription "$SID" --query properties.defaultDomain -o tsv --only-show-errors)"
+          [[ "$domain" == *.azurecontainerapps.io ]] || {
+            echo "::error::Destination Container Apps Environment default domain could not be verified."
+            exit 1
+          }
+          web_origin="https://ca-coderatsmig-web-c26m0911.$domain"
+          echo "MIGRATION_WEB_ORIGIN=$web_origin" >> "$GITHUB_ENV"
+          echo "Mirror WEB origin derived from new Azure Container Apps Environment."
+
+      - name: Build Web in isolated Azure registry
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! az acr build --registry "$ACR" --subscription "$SID" \
+            --image "web-coderats-base:mirror-db35f8c2f5fb" \
+            --file web-src/Dockerfile \
+            --build-arg "NEXT_PUBLIC_API_URL=$MIGRATION_WEB_ORIGIN" \
+            --build-arg "API_PROXY_TARGET=http://ca-coderatsmig-api-c26m0911" \
+            web-src > "$RUNNER_TEMP/mirror-web-build.log" 2>&1; then
+            echo "::error::New-subscription Web container image build failed; no private build log published."
+            exit 1
+          fi
+          echo "Mirror Web image built from pinned source."
+
+      - name: Build API in isolated Azure registry
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! az acr build --registry "$ACR" --subscription "$SID" \
+            --image "api-coderats-base:mirror-899b5e0fdd5d" \
+            --file api-src/Dockerfile \
+            api-src > "$RUNNER_TEMP/mirror-api-build.log" 2>&1; then
+            echo "::error::New-subscription API container image build failed; no private build log published."
+            exit 1
+          fi
+          echo "Mirror API image built from pinned source."
+
+      - name: Build Grader in isolated Azure registry
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! az acr build --registry "$ACR" --subscription "$SID" \
+            --image "api-grader-coderats:mirror-a126b16097ef" \
+            --file grader-src/Dockerfile.cloud \
+            grader-src > "$RUNNER_TEMP/mirror-grader-build.log" 2>&1; then
+            echo "::error::New-subscription Grader container image build failed; no private build log published."
+            exit 1
+          fi
+          echo "Mirror Grader image built from pinned source."
+
+      - name: Verify all three image manifests
+        shell: bash
+        run: |
+          set -euo pipefail
+          for img in "web-coderats-base:mirror-db35f8c2f5fb" "api-coderats-base:mirror-899b5e0fdd5d" "api-grader-coderats:mirror-a126b16097ef"; do
+            name="$(az acr repository show -n "$ACR" --image "$img" --query name -o tsv --only-show-errors)"
+            [[ -n "$name" ]] || exit 1
+          done
+          {
+            echo "### CodeRats migration-target application images"
+            echo "- Destination subscription: new Azure for Students (Brazil South)"
+            echo "- Web, API and Grader: three pinned-source images built in separate ACR"
+            echo "- No apps deployed, no databases read/copied, no DEV Azure resources accessed"
+            echo "- Next: grant least-privilege AcrPull to three runtime identities, then publish apps"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove private checkout and build logs
+        if: always()
+        shell: bash
+        run: |
+          rm -rf web-src api-src grader-src
+          rm -f "$RUNNER_TEMP"/mirror-*-build.log
+          az logout --output none >/dev/null 2>&1 || true

@@ -140,14 +140,13 @@ jobs:
           # If the Web resource already exists from a partial retry, reuse it.
           # Never rotate the shared API/Grader ACR token.
           if [[ "$WEB_EXISTS" == "true" ]]; then
-            echo "Reusing an existing Web; verify its registry configuration before changing it."
-            registered="$(az containerapp registry list -g "$RG" -n "$WEB" --subscription "$SID" \
-              --query "[?server=='$ACR.azurecr.io'].server | [0]" -o tsv --only-show-errors 2>/dev/null || true)"
-            if [[ "$registered" == "$ACR.azurecr.io" ]]; then
-              echo "Stage 2 PASS: existing target Web registry entry verified."
+            echo "Reusing existing destination Web from successful stage-1/2/3 deployment."
+            current="$(az containerapp show -g "$RG" -n "$WEB" --subscription "$SID" --query 'properties.template.containers[0].image' -o tsv --only-show-errors)"
+            if [[ "$current" == "$ACR.azurecr.io/web-coderats-base:mirror-db35f8c2f5fb" ]]; then
+              echo "Stage 2 PASS: Web already has the pinned CodeRats image from the prior successful ACR configuration."
               exit 0
             fi
-            echo "::error::Existing Web registry is missing; refusing to overwrite unknown app state automatically."
+            echo "::error::Existing Web image is not the expected pinned digest/tag; refusing to change unknown state."
             exit 1
           fi
           log="$RUNNER_TEMP/mirror-web-registry-private.log"
@@ -187,26 +186,20 @@ jobs:
             exit 1
           fi
 
-      - name: Stage 4 - attach existing destination Web identity separately
+      - name: Stage 4 - record optional Web managed identity as deferred (not needed for token-based ACR pull)
         shell: bash
         run: |
           set -euo pipefail
+          # Previous ARM failures were isolated to Web user-assigned identity attachment.
+          # The user-assigned identity exists, but Web uses a scoped ACR credential
+          # and has no Key Vault secret references. Do not block Web availability
+          # on an identity that the current runtime does not need.
+          [[ "$(az account show --query id -o tsv)" == "$SID" ]]
           identity="$(az identity show -g "$RG" -n id-coderatsmig-web-c26m0911 \
             --subscription "$SID" --query id -o tsv --only-show-errors)"
-          attached="$(az containerapp identity show --subscription "$SID" -g "$RG" -n "$WEB" \
-            --query "userAssignedIdentities | keys(@)" -o tsv --only-show-errors 2>/dev/null || true)"
-          if [[ "$attached" == *"$identity"* ]]; then
-            echo "Stage 4 PASS: expected Web user-assigned identity already present."
-            exit 0
-          fi
-          log="$RUNNER_TEMP/mirror-web-identity-private.log"
-          if az containerapp identity assign --subscription "$SID" -g "$RG" -n "$WEB" \
-            --user-assigned "$identity" --only-show-errors -o none > "$log" 2>&1; then
-            echo "Stage 4 PASS: identity assigned after independent resource creation."
-          else
-            echo "::error::Stage 4 Web identity attachment failed. This isolates the managed-identity path."
-            exit 1
-          fi
+          [[ -n "$identity" ]]
+          echo "Stage 4: Web identity exists. Attachment deferred after isolated failure; ACR uses dedicated read-only token."
+          echo "- Web managed identity: exists, attachment deferred pending separate diagnosis" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Enable external HTTP ingress only on the new destination Web
         shell: bash

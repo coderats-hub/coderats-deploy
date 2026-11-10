@@ -25,7 +25,7 @@ jobs:
       github.repository == 'coderats-hub/coderats-deploy' &&
       github.ref == 'refs/heads/main' &&
       ((github.event_name == 'workflow_dispatch' && inputs.confirmation == 'BIND_TARGET_STANDARD_MEDIA') ||
-       (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'ci(migration): bind isolated standard media once')))
+       (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'ci(migration): bind verified workloadprofiles media once')))
     runs-on: ubuntu-latest
     environment: migration-target
     timeout-minutes: 25
@@ -33,7 +33,7 @@ jobs:
       SID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
       TID: ${{ secrets.AZURE_TENANT_ID }}
       RG: rg-coderats-migration-c26m0911
-      STANDARD_CAE: cae-coderatsmig-standard-c26m0911
+      STANDARD_CAE: cae-coderatsmig-wp-c26m0911
       STORAGE: stcoderatsmigc26m0911
       SHARE: coderats-media
 
@@ -55,7 +55,8 @@ jobs:
           [[ "$(az account show --query tenantId -o tsv)" == "$TID" ]]
           [[ "$(az storage account show --subscription "$SID" -g "$RG" -n "$STORAGE" --query name -o tsv --only-show-errors)" == "$STORAGE" ]]
           [[ "$(az storage share-rm show --subscription "$SID" -g "$RG" --storage-account "$STORAGE" --name "$SHARE" --query name -o tsv --only-show-errors)" == "$SHARE" ]]
-          az containerapp env show --subscription "$SID" -g "$RG" -n "$STANDARD_CAE" -o json --only-show-errors > "$RUNNER_TEMP/standard-cae-private.json"
+          url="https://management.azure.com/subscriptions/$SID/resourceGroups/$RG/providers/Microsoft.App/managedEnvironments/$STANDARD_CAE?api-version=2026-07-01"
+          az rest --method get --url "$url" --only-show-errors -o json > "$RUNNER_TEMP/standard-cae-private.json"
           python3 - <<'PY'
           import json,os,sys
           d=json.load(open(os.path.join(os.environ['RUNNER_TEMP'],'standard-cae-private.json')))
@@ -63,8 +64,8 @@ jobs:
           mode=str(p.get('environmentMode','')).lower()
           profiles=p.get('workloadProfiles') or []
           consumption=any(isinstance(x,dict) and (x.get('name')=='Consumption' or x.get('workloadProfileType')=='Consumption') for x in profiles)
-          if d.get('name')!=os.environ['STANDARD_CAE'] or p.get('provisioningState')!='Succeeded' or not consumption or (mode and mode!='workloadprofiles'):
-              sys.exit('::error::Target Standard Consumption environment not verified; refusing to touch storage.')
+          if d.get('name')!=os.environ['STANDARD_CAE'] or p.get('provisioningState')!='Succeeded' or not consumption or mode!='workloadprofiles':
+              sys.exit('::error::Target explicit ARM WorkloadProfiles Consumption environment not verified; refusing to touch storage.')
           if not str(p.get('defaultDomain','')).endswith('.brazilsouth.azurecontainerapps.io'):
               sys.exit('::error::Target Standard CAE region/domain mismatch.')
           print('Destination Standard CAE and existing media share verified; no file contents accessed.')

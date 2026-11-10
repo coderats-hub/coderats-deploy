@@ -1,0 +1,185 @@
+name: Create verified WorkloadProfiles CAE through ARM (isolated target only)
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "Type CREATE_TRUE_STANDARD_CAE"
+        required: true
+        type: string
+  push:
+    branches: [main]
+    paths: [".github/workflows/create-migration-target-workloadprofiles-cae.yml"]
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: coderats-migration-target-explicit-standard-cae
+  cancel-in-progress: false
+
+jobs:
+  create:
+    if: >-
+      github.repository == 'coderats-hub/coderats-deploy' &&
+      github.ref == 'refs/heads/main' &&
+      ((github.event_name == 'workflow_dispatch' && inputs.confirmation == 'CREATE_TRUE_STANDARD_CAE') ||
+       (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'ci(migration): create verified workloadprofiles cae once')))
+    runs-on: ubuntu-latest
+    environment: migration-target
+    timeout-minutes: 40
+    env:
+      SID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      TID: ${{ secrets.AZURE_TENANT_ID }}
+      RG: rg-coderats-migration-c26m0911
+      OLD_CAE: cae-coderatsmig-c26m0911
+      WRONG_CAE: cae-coderatsmig-standard-c26m0911
+      NEW_CAE: cae-coderatsmig-wp-c26m0911
+      LOCATION: brazilsouth
+      API_VERSION: "2026-07-01"
+
+    steps:
+      - name: Sign in to destination Azure via OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Check exact new subscription and confirmed Express predecessor
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SID" == 'da3650a9-e291-43f1-ae4b-9dcc8ff84239' ]]
+          [[ "$TID" == '1cf74c7e-fcd9-46f7-8a9d-e699d3529003' ]]
+          [[ "$(az account show --query id -o tsv)" == "$SID" ]]
+          [[ "$(az account show --query tenantId -o tsv)" == "$TID" ]]
+          [[ "$(az group show --subscription "$SID" -n "$RG" --query location -o tsv --only-show-errors)" == "$LOCATION" ]]
+          root="https://management.azure.com/subscriptions/$SID/resourceGroups/$RG/providers/Microsoft.App/managedEnvironments"
+          for name in "$OLD_CAE" "$WRONG_CAE"; do
+            if ! az rest --method get --url "$root/$name?api-version=$API_VERSION" \
+                --only-show-errors -o json > "$RUNNER_TEMP/check-$name-private.json" 2>/dev/null; then
+              echo '::error::Cannot verify isolated predecessor environment; no resource created.'
+              exit 1
+            fi
+            EXPECTED="$name" python3 - <<'PY'
+          import json,os,sys
+          x=json.load(open(os.path.join(os.environ['RUNNER_TEMP'],'check-'+os.environ['EXPECTED']+'-private.json')))
+          if x.get('name')!=os.environ['EXPECTED'] or (x.get('properties') or {}).get('environmentMode')!='Express':
+              sys.exit('::error::Previous candidate is not the known Express mode; refusing extra CAE.')
+          PY
+          done
+          echo 'Both prior mirrors are explicitly Express according to ARM; separate WorkloadProfiles environment required.'
+          az resource list --subscription "$SID" -g "$RG" \
+            --resource-type Microsoft.App/managedEnvironments \
+            --query '[].name' --only-show-errors -o json > "$RUNNER_TEMP/environment-names-private.json"
+          python3 - <<'PY'
+          import json,os
+          arr=json.load(open(os.path.join(os.environ['RUNNER_TEMP'],'environment-names-private.json')))
+          if not isinstance(arr,list):
+              raise SystemExit('::error::Unable to verify target environment inventory.')
+          present=os.environ['NEW_CAE'] in arr
+          with open(os.environ['GITHUB_ENV'],'a') as f:
+              f.write('NEW_ENV_ALREADY_PRESENT='+str(present).lower()+'\n')
+          print('New CAE destination precheck complete; no original DEV or DNS accessed.')
+          PY
+
+      - name: Create explicit WorkloadProfiles ARM resource only if missing
+        if: env.NEW_ENV_ALREADY_PRESENT == 'false'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json,os
+          body={
+              'location':os.environ['LOCATION'],
+              'tags':{'project':'coderats','environment':'migration-target','purpose':'standard-workloadprofiles'},
+              'properties':{
+                  'environmentMode':'WorkloadProfiles',
+                  'appLogsConfiguration':{'destination':'none'},
+                  'workloadProfiles':[{'name':'Consumption','workloadProfileType':'Consumption'}]
+              }
+          }
+          with open(os.path.join(os.environ['RUNNER_TEMP'],'workloadprofiles-request-private.json'),'w') as f:
+              json.dump(body,f)
+          PY
+          url="https://management.azure.com/subscriptions/$SID/resourceGroups/$RG/providers/Microsoft.App/managedEnvironments/$NEW_CAE?api-version=$API_VERSION"
+          if ! az rest --method put --url "$url" \
+            --body @"$RUNNER_TEMP/workloadprofiles-request-private.json" \
+            --headers Content-Type=application/json --only-show-errors -o none \
+            > "$RUNNER_TEMP/create-wp-private.log" 2>&1; then
+            category="$(python3 - <<'PY'
+          import os,re,json
+          p=os.path.join(os.environ['RUNNER_TEMP'],'create-wp-private.log')
+          try: raw=open(p,encoding='utf-8',errors='replace').read()[-20000:]
+          except OSError: raw=''
+          codes=['AuthorizationFailed','RequestDisallowedByPolicy','QuotaExceeded','SubscriptionIsOverQuota',
+                 'ExpressEnvironmentResourceNotSupported','BadRequest','Conflict','InvalidTemplate',
+                 'NoRegisteredProviderFound','MissingSubscriptionRegistration','ResourceNotFound',
+                 'InternalServerError','OperationNotAllowed','TooManyRequests','Forbidden']
+          c=next((c for c in codes if re.search(r'(?<![A-Za-z])'+c+r'(?![A-Za-z])',raw,re.I)),'Unclassified')
+          if c=='Unclassified' and re.search(r'unrecognized arguments|not recognized',raw,re.I):c='AzureCliArgumentError'
+          print(c)
+          PY
+            )"
+            echo "::error::Explicit destination WorkloadProfiles provisioning failed. Safe class: $category"
+            exit 1
+          fi
+          echo 'Explicit target WorkloadProfiles ARM provisioning submitted (not yet health-verified).'
+
+      - name: Verify effective ARM environment mode and built-in Consumption
+        shell: bash
+        run: |
+          set -euo pipefail
+          url="https://management.azure.com/subscriptions/$SID/resourceGroups/$RG/providers/Microsoft.App/managedEnvironments/$NEW_CAE?api-version=$API_VERSION"
+          ready=false
+          for attempt in $(seq 1 60); do
+            if az rest --method get --url "$url" --only-show-errors -o json \
+              > "$RUNNER_TEMP/new-wp-private.json" 2>/dev/null; then
+              state="$(python3 - <<'PY'
+          import json,os
+          x=json.load(open(os.path.join(os.environ['RUNNER_TEMP'],'new-wp-private.json')))
+          p=x.get('properties') or {}
+          if x.get('name')!=os.environ['NEW_CAE']:
+              print('mismatch')
+          elif p.get('environmentMode')!='WorkloadProfiles':
+              print('wrong-mode')
+          elif p.get('provisioningState')=='Failed':
+              print('failed')
+          elif p.get('provisioningState')=='Succeeded':
+              has_consumption=any(isinstance(v,dict) and v.get('name')=='Consumption' and v.get('workloadProfileType')=='Consumption' for v in p.get('workloadProfiles') or [])
+              domain=str(p.get('defaultDomain') or '')
+              print('ready' if has_consumption and domain.endswith('.brazilsouth.azurecontainerapps.io') else 'missing-profile')
+          else:
+              print('pending')
+          PY
+              )"
+              case "$state" in
+                ready) ready=true; break ;;
+                mismatch|wrong-mode|failed) echo "::error::New target environment ARM verification failed: $state"; exit 1 ;;
+              esac
+            fi
+            sleep 10
+          done
+          [[ "$ready" == true ]] || { echo '::error::Destination WorkloadProfiles environment not ready within bounded verification window.'; exit 1; }
+          {
+            echo '### Isolated target WorkloadProfiles environment'
+            echo '- Effective ARM environmentMode: WorkloadProfiles'
+            echo '- ProvisioningState: Succeeded'
+            echo '- Built-in Consumption workload profile: verified'
+            echo '- Region and Azure Container Apps domain: brazilsouth verified'
+            echo '- Existing two Express environments and all their apps: not modified'
+            echo '- Old DEV, DNS, database rows and media: not accessed'
+            echo '- Azure Files binding, new app deployments and GET job: not yet run'
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo 'Verified explicit WorkloadProfiles mode through ARM GET; separate target CAE is ready.'
+
+      - name: Remove private temporary metadata and Azure credentials
+        if: always()
+        shell: bash
+        run: |
+          rm -f "$RUNNER_TEMP"/check-*-private.json "$RUNNER_TEMP/environment-names-private.json" \
+            "$RUNNER_TEMP/workloadprofiles-request-private.json" "$RUNNER_TEMP/new-wp-private.json" \
+            "$RUNNER_TEMP/create-wp-private.log"
+          az logout -o none >/dev/null 2>&1 || true

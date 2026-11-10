@@ -84,7 +84,8 @@ jobs:
               echo "::error::Expected state account name unavailable; cannot use an unknown account."
               exit 1
             fi
-            az storage account create --subscription "$TARGET_SUBSCRIPTION_ID" --name "$storage" -g "$group" -l eastus \
+            # Azure for Students allowed region policy (verified 2026-11-09) allows brazilsouth, not eastus.
+            az storage account create --subscription "$TARGET_SUBSCRIPTION_ID" --name "$storage" -g "$group" -l brazilsouth \
               --kind StorageV2 --sku Standard_LRS \
               --min-tls-version TLS1_2 --https-only true \
               --allow-blob-public-access false --allow-shared-key-access true \

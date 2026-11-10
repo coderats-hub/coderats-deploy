@@ -1,4 +1,4 @@
-name: Activate prebuilt CodeRats Web DNS fix (new Azure only)
+name: Activate prebuilt CodeRats Web private-API DNS fix (new Azure only)
 
 on:
   workflow_dispatch:
@@ -37,7 +37,7 @@ jobs:
       WEB: ca-coderatsmig-web-c26m0911
       API: ca-coderatsmig-api-c26m0911
       OLD: crcoderatsmigc26m0911.azurecr.io/web-coderats-base:mirror-db35f8c2f5fb
-      NEW: crcoderatsmigc26m0911.azurecr.io/web-coderats-base:mirror-dnsfix-db35f8c2f5fb
+      NEW: crcoderatsmigc26m0911.azurecr.io/web-coderats-base:mirror-internal-fqdn-db35f8c2f5fb
     steps:
       - name: Authenticate to new Azure only
         uses: azure/login@v2
@@ -66,7 +66,8 @@ jobs:
           web=json.load(open(os.path.join(base,"target-web-private.json")))
           api=json.load(open(os.path.join(base,"target-api-private.json")))
           image=web.get("image")
-          if image not in (os.environ["OLD"],os.environ["NEW"]):
+          previous=os.environ["ACR"]+".azurecr.io/web-coderats-base:mirror-dnsfix-db35f8c2f5fb"
+          if image not in (os.environ["OLD"],previous,os.environ["NEW"]):
               print("::error::Web image differs from reviewed source; no changes allowed.")
               sys.exit(1)
           if not (web.get("ingress") or {}).get("external") is True:
@@ -91,64 +92,72 @@ jobs:
           has_target_registry=any(isinstance(r,dict) and r.get("server")==os.environ["ACR"]+".azurecr.io" for r in registries)
           print("Web registry GET metadata contains expected server="+str(has_target_registry)+
                 "; current Web private ACR image was confirmed by ARM.")
-          with open(os.environ["GITHUB_ENV"],"a") as f: f.write("TARGET_API_FQDN="+fqdn+"\n")
+          # Azure's API GET exposes a public-form FQDN even when its ingress
+          # is private. The HTTP route is only valid at app.internal.<CAE-domain>.
+          # This candidate is restricted to the exact target API and region.
+          suffix=fqdn[len(os.environ["API"])+1:]
+          private_origin=os.environ["API"]+".internal."+suffix
+          with open(os.environ["GITHUB_ENV"],"a") as f: f.write("TARGET_API_FQDN="+private_origin+"\n")
           print("Destination-only Web/registry/API verified; Web image currently "+("old" if image==os.environ["OLD"] else "new")+".")
           PY
           tag="$(az acr repository show-tags --name "$ACR" --repository web-coderats-base \
-            --subscription "$SID" --query "[?@=='mirror-dnsfix-db35f8c2f5fb'] | [0]" \
+            --subscription "$SID" --query "[?@=='mirror-internal-fqdn-db35f8c2f5fb'] | [0]" \
             --only-show-errors -o tsv 2>/dev/null || true)"
-          [[ "$tag" == "mirror-dnsfix-db35f8c2f5fb" ]] || {
+          [[ "$tag" == "mirror-internal-fqdn-db35f8c2f5fb" ]] || {
             echo "::error::Previously built DNS-fix image tag not visible in target ACR."
             exit 1
           }
           echo "New DNS image confirmed in isolated registry, no rebuild needed."
 
-      - name: Update Web image separately and classify Azure CLI errors
+      - name: Copy only the reviewed healthy Web revision with new image and private API target
         shell: bash
         run: |
           set -euo pipefail
           old="$(az containerapp show --subscription "$SID" -g "$RG" -n "$WEB" \
-            --query 'properties.template.containers[0].image' -o tsv --only-show-errors)"
+            --query properties.template.containers[0].image -o tsv --only-show-errors)"
+          previous="$ACR.azurecr.io/web-coderats-base:mirror-dnsfix-db35f8c2f5fb"
+          [[ "$old" == "$OLD" || "$old" == "$previous" || "$old" == "$NEW" ]] || {
+            echo "::error::Unexpected target Web image; refusing to overwrite."
+            exit 1
+          }
           if [[ "$old" == "$NEW" ]]; then
-            echo "Image already activated, no second revision needed."
+            echo "Web private-FQDN image is already declared; perform exact revision and HTTP verification."
             exit 0
           fi
-          [[ "$old" == "$OLD" ]]
-          logfile="$RUNNER_TEMP/web-image-update-private.log"
-          if az containerapp update --subscription "$SID" -g "$RG" -n "$WEB" \
-            --image "$NEW" --only-show-errors -o none > "$logfile" 2>&1; then
-            echo "Image-only Web update succeeded."
+          baseline="$(az containerapp revision list --subscription "$SID" -g "$RG" -n "$WEB" \
+            --query "[?properties.active==\`true\` && properties.healthState=='Healthy'].name | [0]" \
+            --only-show-errors -o tsv)"
+          [[ "$baseline" == "$WEB"--* ]] || {
+            echo "::error::No active healthy Web baseline revision; no mutation performed."
+            exit 1
+          }
+          # A single revision copy changes the image and WebSocket/API runtime
+          # origin atomically; unlike the previous split ARM updates, it also
+          # retains the healthy baseline for recovery in case of failure.
+          logfile="$RUNNER_TEMP/web-internal-revision-activation-private.log"
+          if az containerapp revision copy --subscription "$SID" -g "$RG" -n "$WEB" \
+              --from-revision "$baseline" --image "$NEW" \
+              --set-env-vars "API_PROXY_TARGET=http://$TARGET_API_FQDN" \
+              --min-replicas 1 --max-replicas 1 \
+              --only-show-errors -o none > "$logfile" 2>&1; then
+            echo "A new Web revision with private API hostname was requested."
           else
             LOGFILE="$logfile" python3 - <<'PY'
-          import os,re,json
-          s=open(os.environ["LOGFILE"],errors="replace").read()
-          candidates=re.findall(r'"code"\s*:\s*"([A-Za-z][A-Za-z0-9_]{1,60})"',s)
-          candidates+=re.findall(r'\(([A-Za-z][A-Za-z0-9_]{1,60})\)',s)
-          allow={"UnexpectedException","BadRequest","Conflict","RequestDisallowedByAzure","ResourceQuotaExceeded",
-                 "OperationNotAllowed","AuthorizationFailed","InvalidParameterValue","ContainerAppOperationError"}
-          code=next((c for c in candidates if c in allow),"unclassified")
-          terms={"registry-auth":r"unauthorized|denied|invalid credential|authentication",
-                 "image-pull":r"image pull|imagepull|manifest unknown|not found",
-                 "identity":r"managed identity|userassignedidentity|user assigned identity",
-                 "revision":r"revision|provisioning",
-                 "conflict":r"conflict|already exists"}
-          hits=[k for k,v in terms.items() if re.search(v,s,re.I)]
-          print("::error::Web image-only ARM update failed; code="+code+"; categories="+(",".join(hits) or "none")+". Raw Azure output withheld.")
+          import os,re
+          data=open(os.environ["LOGFILE"],errors="replace").read()
+          codes=re.findall(r'"code"\s*:\s*"([A-Za-z][A-Za-z0-9_]{1,62})"',data)
+          codes+=re.findall(r'\(([A-Za-z][A-Za-z0-9_]{1,62})\)',data)
+          allow={"UnexpectedException","BadRequest","Conflict","AuthorizationFailed",
+                 "ContainerAppOperationError","OperationNotAllowed","InvalidParameterValue"}
+          code=next((x for x in codes if x in allow),"unclassified")
+          categories={"identity":r"managed identity|userassignedidentity|user assigned identity",
+                      "registry":r"registry|acr|image pull|unauthorized",
+                      "revision":r"revision|provision",
+                      "conflict":r"conflict|already exists"}
+          hits=[k for k,v in categories.items() if re.search(v,data,re.I)]
+          print("::error::Target Web revision-copy ARM failure: code="+code+
+                " categories="+(",".join(hits) or "none")+". Raw output withheld.")
           PY
-            exit 1
-          fi
-
-      - name: Update only Web API proxy environment separately
-        shell: bash
-        run: |
-          set -euo pipefail
-          logfile="$RUNNER_TEMP/web-env-update-private.log"
-          if az containerapp update --subscription "$SID" -g "$RG" -n "$WEB" \
-            --set-env-vars "API_PROXY_TARGET=http://$TARGET_API_FQDN" \
-            --only-show-errors -o none > "$logfile" 2>&1; then
-            echo "Web runtime API proxy target changed to exact private FQDN."
-          else
-            echo "::error::Web proxy runtime environment update failed (independent of image); raw CLI output withheld."
             exit 1
           fi
 
@@ -160,6 +169,7 @@ jobs:
             --query 'properties.template.containers[0].image' -o tsv --only-show-errors)"
           [[ "$current" == "$NEW" ]] || { echo "::error::Wrong final Web image."; exit 1; }
           ready="false"
+          export NEW_WEB_IMAGE="$NEW"
           web_origin="$(az containerapp show --subscription "$SID" -g "$RG" -n "$WEB" \
             --query properties.configuration.ingress.fqdn -o tsv --only-show-errors)"
           [[ "$web_origin" == "$WEB".*.brazilsouth.azurecontainerapps.io ]]
@@ -172,7 +182,10 @@ jobs:
           ok=isinstance(a,list) and any(
             (r.get("properties") or {}).get("active") is True
             and (r.get("properties") or {}).get("healthState")=="Healthy"
-            and (r.get("properties") or {}).get("runningState")=="Running" for r in a)
+            and (r.get("properties") or {}).get("runningState")=="Running"
+            and ((r.get("properties") or {}).get("template") or {}).get("containers")
+            and ((r.get("properties") or {}).get("template") or {}).get("containers")[0].get("image")==os.environ["NEW_WEB_IMAGE"]
+            for r in a)
           sys.exit(0 if ok else 1)
           PY
             then ready="true"; break; fi
@@ -207,6 +220,6 @@ jobs:
         shell: bash
         run: |
           rm -f "$RUNNER_TEMP/target-web-private.json" "$RUNNER_TEMP/target-api-private.json" \
-            "$RUNNER_TEMP/web-image-update-private.log" "$RUNNER_TEMP/web-env-update-private.log" \
+            "$RUNNER_TEMP/web-internal-revision-activation-private.log" \
             "$RUNNER_TEMP/web-revision-health.json"
           az logout -o none >/dev/null 2>&1 || true

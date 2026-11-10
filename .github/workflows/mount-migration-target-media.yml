@@ -1,0 +1,191 @@
+name: Mount Azure Files in isolated CodeRats API (manual)
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "Type MOUNT_TARGET_MEDIA to attach existing target share"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: coderats-migration-target-media-mount
+  cancel-in-progress: false
+
+jobs:
+  mount:
+    if: >-
+      github.repository == 'coderats-hub/coderats-deploy' &&
+      github.ref == 'refs/heads/main' &&
+      inputs.confirmation == 'MOUNT_TARGET_MEDIA'
+    runs-on: ubuntu-latest
+    environment: migration-target
+    timeout-minutes: 25
+    env:
+      SID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      TID: ${{ secrets.AZURE_TENANT_ID }}
+      RG: rg-coderats-migration-c26m0911
+      CAE: cae-coderatsmig-c26m0911
+      API: ca-coderatsmig-api-c26m0911
+      WEB: ca-coderatsmig-web-c26m0911
+      ACR: crcoderatsmigc26m0911
+      STORAGE: stcoderatsmigc26m0911
+      SHARE: coderats-media
+      VOLUME: coderats-media-volume
+      MOUNT: /tmp/coderats-media
+    steps:
+      - name: Sign in to destination subscription with OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Verify destination identity, storage and API preconditions
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SID" == 'da3650a9-e291-43f1-ae4b-9dcc8ff84239' ]]
+          [[ "$TID" == '1cf74c7e-fcd9-46f7-8a9d-e699d3529003' ]]
+          [[ "$(az account show --query id -o tsv)" == "$SID" ]]
+          [[ "$(az account show --query tenantId -o tsv)" == "$TID" ]]
+          [[ "$(az containerapp env show --subscription "$SID" -g "$RG" -n "$CAE" --query name -o tsv --only-show-errors)" == "$CAE" ]]
+          [[ "$(az storage account show --subscription "$SID" -g "$RG" -n "$STORAGE" --query name -o tsv --only-show-errors)" == "$STORAGE" ]]
+          [[ "$(az storage share-rm show --subscription "$SID" -g "$RG" --storage-account "$STORAGE" --name "$SHARE" --query name -o tsv --only-show-errors)" == "$SHARE" ]]
+          az containerapp show --subscription "$SID" -g "$RG" -n "$API" --only-show-errors -o json > "$RUNNER_TEMP/api-before.json"
+          python3 - <<'PY'
+          import json,os,sys
+          d=json.load(open(os.path.join(os.environ['RUNNER_TEMP'],'api-before.json')))
+          p=d.get('properties') or {}
+          ingress=(p.get('configuration') or {}).get('ingress') or {}
+          t=p.get('template') or {}
+          containers=t.get('containers') or []
+          if (d.get('name')!=os.environ['API'] or p.get('runningStatus')!='Running' or
+              ingress.get('external') is not False or ingress.get('targetPort')!=8080 or
+              len(containers)!=1 or not str(containers[0].get('image','')).startswith(os.environ['ACR']+'.azurecr.io/api-coderats-base:')):
+              sys.exit('::error::Target-only API preconditions failed.')
+          env=containers[0].get('env') or []
+          if [e.get('value') for e in env if e.get('name')=='MEDIA_STORAGE_DIRECTORY']!=[os.environ['MOUNT']]:
+              sys.exit('::error::Target API media directory differs; refusing unsafe mount.')
+          vols=t.get('volumes') or []
+          mounts=containers[0].get('volumeMounts') or []
+          v=[x for x in vols if x.get('name')==os.environ['VOLUME']]
+          m=[x for x in mounts if x.get('volumeName')==os.environ['VOLUME']]
+          if (len(v)>1 or len(m)>1 or bool(v)!=bool(m) or
+              any(x.get('mountPath')==os.environ['MOUNT'] and x.get('volumeName')!=os.environ['VOLUME'] for x in mounts) or
+              (v and (v[0].get('storageName')!=os.environ['SHARE'] or v[0].get('storageType')!='AzureFile')) or
+              (m and m[0].get('mountPath')!=os.environ['MOUNT'])):
+              sys.exit('::error::Conflicting API media volume; refusing overwrite.')
+          with open(os.environ['GITHUB_ENV'],'a') as f:
+              f.write('MEDIA_ALREADY_MOUNTED='+str(bool(v)).lower()+'\n')
+          print('Destination app and media configuration validated (no private values printed).')
+          PY
+
+      - name: Ensure exact environment storage binding without overwriting others
+        shell: bash
+        run: |
+          set -euo pipefail
+          az containerapp env storage list --subscription "$SID" -g "$RG" -n "$CAE" --only-show-errors -o json > "$RUNNER_TEMP/storage-before.json"
+          binding="$(python3 - <<'PY'
+          import json,os
+          d=json.load(open(os.path.join(os.environ['RUNNER_TEMP'],'storage-before.json')))
+          matches=[v for v in d if v.get('name')==os.environ['SHARE']] if isinstance(d,list) else []
+          if not matches: print('absent')
+          elif len(matches)!=1: print('conflict')
+          else:
+              a=(matches[0].get('properties') or {}).get('azureFile') or {}
+              print('existing' if a.get('accountName')==os.environ['STORAGE'] and a.get('shareName')==os.environ['SHARE'] and a.get('accessMode')=='ReadWrite' else 'conflict')
+          PY
+          )"
+          case "$binding" in
+            existing) echo 'Exact storage binding already exists.' ;;
+            absent)
+              [[ "$MEDIA_ALREADY_MOUNTED" == false ]] || { echo '::error::Mounted volume has no environment binding.'; exit 1; }
+              key="$(az storage account keys list --subscription "$SID" -g "$RG" -n "$STORAGE" --query '[0].value' -o tsv --only-show-errors)"
+              [[ -n "$key" ]] || { echo '::error::Target storage key unavailable.'; exit 1; }
+              echo "::add-mask::$key"
+              if ! az containerapp env storage set --subscription "$SID" -g "$RG" -n "$CAE" --storage-name "$SHARE" --access-mode ReadWrite \
+                --azure-file-account-name "$STORAGE" --azure-file-account-key "$key" --azure-file-share-name "$SHARE" \
+                --only-show-errors -o none > "$RUNNER_TEMP/storage-set-private.log" 2>&1; then
+                echo '::error::Target storage registration failed; private diagnostics suppressed.'
+                exit 1
+              fi
+              unset key
+              echo 'Target-only share binding registered.' ;;
+            *) echo '::error::Conflicting storage binding; refusing to overwrite.'; exit 1 ;;
+          esac
+
+      - name: Add API volume mount while preserving existing secrets
+        if: env.MEDIA_ALREADY_MOUNTED == 'false'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json,os
+          tmp=os.environ['RUNNER_TEMP']
+          d=json.load(open(os.path.join(tmp,'api-before.json')))
+          p=d['properties']
+          t=p['template']
+          c=t['containers'][0]
+          t['volumes']=(t.get('volumes') or [])+[{'name':os.environ['VOLUME'],'storageName':os.environ['SHARE'],'storageType':'AzureFile'}]
+          c['volumeMounts']=(c.get('volumeMounts') or [])+[{'volumeName':os.environ['VOLUME'],'mountPath':os.environ['MOUNT']}]
+          # Exported secret values are unavailable. Omit this section to preserve
+          # existing app secrets, as documented by Microsoft for update --yaml.
+          (p.get('configuration') or {}).pop('secrets',None)
+          with open(os.path.join(tmp,'api-media.yaml'),'w') as f:
+              json.dump(d,f)  # JSON is valid YAML
+          PY
+          if ! az containerapp update --subscription "$SID" -g "$RG" -n "$API" --yaml "$RUNNER_TEMP/api-media.yaml" \
+            --only-show-errors -o none > "$RUNNER_TEMP/api-media-update-private.log" 2>&1; then
+            echo '::error::Target API mount revision failed; private diagnostics suppressed.'
+            exit 1
+          fi
+          echo 'New target API media revision submitted.'
+
+      - name: Verify exact new revision and anonymous Web-to-API HTTPS
+        shell: bash
+        run: |
+          set -euo pipefail
+          domain="$(az containerapp env show --subscription "$SID" -g "$RG" -n "$CAE" --query properties.defaultDomain -o tsv --only-show-errors)"
+          [[ "$domain" == *.brazilsouth.azurecontainerapps.io ]]
+          ready=false
+          for attempt in $(seq 1 16); do
+            az containerapp show --subscription "$SID" -g "$RG" -n "$API" --only-show-errors -o json > "$RUNNER_TEMP/api-after.json"
+            if python3 - <<'PY'
+          import json,os,sys
+          p=json.load(open(os.path.join(os.environ['RUNNER_TEMP'],'api-after.json'))).get('properties') or {}
+          t=p.get('template') or {}
+          c=t.get('containers') or []
+          v=t.get('volumes') or []
+          m=c[0].get('volumeMounts') or [] if c else []
+          okv=any(x.get('name')==os.environ['VOLUME'] and x.get('storageName')==os.environ['SHARE'] and x.get('storageType')=='AzureFile' for x in v)
+          okm=any(x.get('volumeName')==os.environ['VOLUME'] and x.get('mountPath')==os.environ['MOUNT'] for x in m)
+          okr=bool(p.get('latestRevisionName')) and p.get('latestRevisionName')==p.get('latestReadyRevisionName')
+          sys.exit(0 if okv and okm and okr and p.get('runningStatus')=='Running' else 1)
+          PY
+            then ready=true; break; fi
+            sleep 10
+          done
+          [[ "$ready" == true ]] || { echo '::error::Target API media revision did not become ready.'; exit 1; }
+          base="https://$WEB.$domain"
+          health="$(curl -fsS -o /dev/null --max-time 20 -w '%{http_code}' "$base/health" 2>/dev/null || true)"
+          auth="$(curl -sS -o /dev/null --max-time 20 -w '%{http_code}' "$base/api/v1/auth/me" 2>/dev/null || true)"
+          [[ "$health" == 200 && "$auth" == 401 ]] || { echo '::error::Target Web/API smoke failed after mounting media.'; exit 1; }
+          {
+            echo '### Target media mount'
+            echo '- API mount: configured; latest revision ready'
+            echo '- Target Web health: HTTP 200; anonymous API: HTTP 401'
+            echo '- Original DEV, DNS, database rows and media contents: untouched'
+            echo '- GET Worker and user-data copying: not performed'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove ephemeral private configs and Azure credentials
+        if: always()
+        shell: bash
+        run: |
+          rm -f "$RUNNER_TEMP"/api-before.json "$RUNNER_TEMP"/api-after.json "$RUNNER_TEMP"/api-media.yaml \
+            "$RUNNER_TEMP"/storage-before.json "$RUNNER_TEMP"/storage-set-private.log "$RUNNER_TEMP"/api-media-update-private.log
+          az logout -o none >/dev/null 2>&1 || true

@@ -215,6 +215,69 @@ jobs:
           rm -f "$RUNNER_TEMP/media-account-name.txt" "$RUNNER_TEMP/media-share-name.txt" \
             "$RUNNER_TEMP/api-media-private.json"
 
+      - name: Read-only target media binding and ARM activity classification
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SID" == 'da3650a9-e291-43f1-ae4b-9dcc8ff84239' ]]
+          [[ "$TID" == '1cf74c7e-fcd9-46f7-8a9d-e699d3529003' ]]
+          echo '### Azure Files mount registration diagnostics (read-only)' >> "$GITHUB_STEP_SUMMARY"
+          if az containerapp env storage list --subscription "$SID" -g "$RG" -n "$CAE" \
+            --only-show-errors -o json > "$RUNNER_TEMP/env-storages-private.json" 2>/dev/null; then
+            python3 - <<'PY'
+          import json,os
+          x=json.load(open(os.path.join(os.environ['RUNNER_TEMP'],'env-storages-private.json')))
+          a=x if isinstance(x,list) else []
+          match=[v for v in a if isinstance(v,dict) and v.get('name')=='coderats-media']
+          exact=bool(match) and all(((v.get('properties') or {}).get('azureFile') or {}).get('accountName')=='stcoderatsmigc26m0911' and ((v.get('properties') or {}).get('azureFile') or {}).get('shareName')=='coderats-media' for v in match)
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:
+              f.write('- Target-only Container Apps Environment storage binding present: '+str(bool(match))+'\n')
+              f.write('- Storage account/share link matches expected target: '+str(exact)+'\n')
+          PY
+          else
+            echo '- Container Apps Environment storage listing: unavailable' >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if az monitor activity-log list --subscription "$SID" --resource-group "$RG" --offset 3h --max-events 150 \
+            --only-show-errors -o json > "$RUNNER_TEMP/activity-private.json" 2>/dev/null; then
+            python3 - <<'PY'
+          import json,os,re
+          x=json.load(open(os.path.join(os.environ['RUNNER_TEMP'],'activity-private.json')))
+          x=x if isinstance(x,list) else []
+          matched=[]
+          for a in x:
+              if not isinstance(a,dict): continue
+              op=a.get('operationName') or {}
+              name=op.get('value','') if isinstance(op,dict) else str(op)
+              if 'microsoft.app/managedenvironments/storages/write' in name.lower():
+                  matched.append(a)
+          failed=[]
+          codes=['AuthorizationFailed','LinkedAuthorizationFailed','RequestDisallowedByPolicy',
+                 'Forbidden','BadRequest','Conflict','InvalidRequestContent',
+                 'MissingSubscriptionRegistration','NoRegisteredProviderFound','ResourceNotFound',
+                 'OperationNotAllowed','InternalServerError','ServiceUnavailable','TooManyRequests']
+          groups={}
+          for a in matched:
+              status=a.get('status') or {}
+              val=status.get('value','other') if isinstance(status,dict) else str(status)
+              status=val if val in ('Succeeded','Failed','Started','Accepted') else 'Other'
+              groups[status]=groups.get(status,0)+1
+              if status=='Failed':
+                  p=a.get('properties') or {}
+                  msg=str(p.get('statusMessage',''))[:8000] if isinstance(p,dict) else ''
+                  code=next((c for c in codes if re.search(r'(?<![A-Za-z])'+c+r'(?![A-Za-z])',msg,re.I)), 'Unclassified')
+                  failed.append(code)
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:
+              f.write('- Azure ARM storage write events observed (last 3h): '+str(len(matched))+'\n')
+              f.write('- ARM statuses: '+(', '.join(k+':'+str(v) for k,v in sorted(groups.items())) if groups else 'none')+'\n')
+              f.write('- ARM failure classes: '+(', '.join(sorted(set(failed))) if failed else 'none observed')+'\n')
+              f.write('- No raw activity-log messages, credentials or storage paths published\n')
+          PY
+          else
+            echo '- Azure ARM activity-log query: unavailable (does not mean zero failures)' >> "$GITHUB_STEP_SUMMARY"
+          fi
+          rm -f "$RUNNER_TEMP/env-storages-private.json" "$RUNNER_TEMP/activity-private.json"
+          echo 'Target-only read-only registration diagnostic completed.'
+
       - name: Cleanup private transient files and Azure session
         if: always()
         shell: bash

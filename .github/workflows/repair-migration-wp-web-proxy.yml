@@ -1,0 +1,201 @@
+name: Repair isolated WorkloadProfiles Web proxy to private API (target only)
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "Type FIX_WP_WEB_PROXY"
+        required: true
+        type: string
+  push:
+    branches: [main]
+    paths: [".github/workflows/repair-migration-wp-web-proxy.yml"]
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: coderats-migration-wp-web-proxy
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    if: >-
+      github.repository == 'coderats-hub/coderats-deploy' &&
+      github.ref == 'refs/heads/main' &&
+      ((github.event_name == 'workflow_dispatch' && inputs.confirmation == 'FIX_WP_WEB_PROXY') ||
+       (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'ci(migration): fix wp web internal api fqdn once')))
+    runs-on: ubuntu-latest
+    environment: migration-target
+    timeout-minutes: 65
+    env:
+      SID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      TID: ${{ secrets.AZURE_TENANT_ID }}
+      RG: rg-coderats-migration-c26m0911
+      CAE: cae-coderatsmig-wp-c26m0911
+      ACR: crcoderatsmigc26m0911
+      WEB: ca-cdmstd-web-c26m0911
+      API: ca-cdmstd-api-c26m0911
+
+    steps:
+      - name: Create read-only private Web source access
+        id: github-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.CODERATS_DEPLOY_APP_ID }}
+          private-key: ${{ secrets.CODERATS_DEPLOY_APP_PRIVATE_KEY }}
+          owner: coderats-hub
+          repositories: web-coderats-base
+          permission-contents: read
+
+      - name: Checkout pinned Web application without persisting credentials
+        uses: actions/checkout@v4
+        with:
+          repository: coderats-hub/web-coderats-base
+          ref: db35f8c2f5fb104a47afaeaa60dad9e6e709d193
+          token: ${{ steps.github-token.outputs.token }}
+          path: web-src
+          persist-credentials: false
+
+      - name: Sign in only to new Azure subscription
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Verify WorkloadProfiles mode and exact internal API ingress FQDN
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SID" == 'da3650a9-e291-43f1-ae4b-9dcc8ff84239' ]]
+          [[ "$TID" == '1cf74c7e-fcd9-46f7-8a9d-e699d3529003' ]]
+          [[ "$(az account show --query id -o tsv)" == "$SID" ]]
+          [[ "$(az account show --query tenantId -o tsv)" == "$TID" ]]
+          [[ "$(git -C web-src rev-parse HEAD)" == 'db35f8c2f5fb104a47afaeaa60dad9e6e709d193' ]]
+          az rest --method get --url "https://management.azure.com/subscriptions/$SID/resourceGroups/$RG/providers/Microsoft.App/managedEnvironments/$CAE?api-version=2026-07-01" \
+            --only-show-errors -o json > "$RUNNER_TEMP/wp-env-private.json"
+          az containerapp show --subscription "$SID" -g "$RG" -n "$WEB" \
+            --only-show-errors -o json > "$RUNNER_TEMP/wp-web-private.json"
+          az containerapp show --subscription "$SID" -g "$RG" -n "$API" \
+            --only-show-errors -o json > "$RUNNER_TEMP/wp-api-private.json"
+          python3 - <<'PY'
+          import os,json,sys
+          t=os.environ['RUNNER_TEMP']
+          e=json.load(open(os.path.join(t,'wp-env-private.json')))
+          p=e.get('properties') or {}
+          domain=str(p.get('defaultDomain') or '')
+          if e.get('name')!=os.environ['CAE'] or p.get('environmentMode')!='WorkloadProfiles' or p.get('provisioningState')!='Succeeded' or not domain.endswith('.brazilsouth.azurecontainerapps.io'):
+              sys.exit('::error::Expected true WorkloadProfiles environment missing.')
+          web=json.load(open(os.path.join(t,'wp-web-private.json')))
+          api=json.load(open(os.path.join(t,'wp-api-private.json')))
+          wi=((web.get('properties') or {}).get('configuration') or {}).get('ingress') or {}
+          ai=((api.get('properties') or {}).get('configuration') or {}).get('ingress') or {}
+          expected_api=os.environ['API']+'.internal.'+domain
+          if (web.get('name')!=os.environ['WEB'] or wi.get('external') is not True or
+              api.get('name')!=os.environ['API'] or ai.get('external') is not False or
+              ai.get('targetPort')!=8080 or str(ai.get('fqdn') or '').lower()!=expected_api.lower()):
+              sys.exit('::error::Target Web/API ingress FQDN does not match internal Azure Container Apps topology.')
+          with open(os.environ['GITHUB_ENV'],'a') as f:
+              f.write('API_ORIGIN=https://'+expected_api+'\n')
+              f.write('WEB_ORIGIN=https://'+os.environ['WEB']+'.'+domain+'\n')
+          print('Target-only internal API FQDN and true WorkloadProfiles environment verified.')
+          PY
+
+      - name: Create scoped temporary ACR push credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          token=coderats-standard-build
+          [[ "$(az acr token show --registry "$ACR" --name "$token" --subscription "$SID" --query name -o tsv --only-show-errors)" == "$token" ]] || {
+            echo '::error::Scoped destination ACR token missing.'; exit 1;
+          }
+          az acr token update --registry "$ACR" --name "$token" --status enabled --subscription "$SID" --only-show-errors -o none \
+            > "$RUNNER_TEMP/acr-private.log" 2>&1 || { echo '::error::Scoped destination ACR token cannot be enabled.'; exit 1; }
+          password="$(az acr token credential generate --registry "$ACR" --name "$token" --password1 --expiration-in-days 1 \
+            --subscription "$SID" --query 'passwords[0].value' -o tsv --only-show-errors)"
+          [[ -n "$password" ]] || { echo '::error::Scoped destination registry credential unavailable.'; exit 1; }
+          echo "::add-mask::$password"
+          if ! printf '%s' "$password" | docker login "$ACR.azurecr.io" --username "$token" --password-stdin \
+            > "$RUNNER_TEMP/docker-login-private.log" 2>&1; then
+            echo '::error::Scoped target ACR login failed.'; exit 1
+          fi
+          unset password
+          echo 'Temporary target registry write authentication ready.'
+
+      - name: Rebuild Web with correct HTTPS internal API FQDN only
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="$ACR.azurecr.io/web-coderats-base:mirror-wp-internal-db35f8c2-$GITHUB_RUN_ID"
+          if ! docker build -f web-src/Dockerfile \
+            --build-arg "NEXT_PUBLIC_API_URL=$WEB_ORIGIN" \
+            --build-arg "API_PROXY_TARGET=$API_ORIGIN" \
+            -t "$image" web-src > "$RUNNER_TEMP/build-private.log" 2>&1 ||
+            ! docker push "$image" >> "$RUNNER_TEMP/build-private.log" 2>&1; then
+            echo '::error::Target-only Web rebuild/push failed; private output suppressed.'
+            exit 1
+          fi
+          echo "NEW_WEB_IMAGE=$image" >> "$GITHUB_ENV"
+          echo 'New Web image built from pinned source using internal HTTPS ingress FQDN.'
+
+      - name: Update only isolated WorkloadProfiles Web app
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! az containerapp update --subscription "$SID" -g "$RG" -n "$WEB" \
+            --image "$NEW_WEB_IMAGE" \
+            --set-env-vars "API_PROXY_TARGET=$API_ORIGIN" "NEXT_PUBLIC_API_URL=$WEB_ORIGIN" \
+            --only-show-errors -o none > "$RUNNER_TEMP/web-update-private.log" 2>&1; then
+            echo '::error::Destination WorkloadProfiles Web revision update failed.'
+            exit 1
+          fi
+          echo 'Only the destination WorkloadProfiles Web app has a new revision.'
+
+      - name: Require ready revision and independent Web-to-API 200/401 smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          ok=false
+          for attempt in $(seq 1 24); do
+            health="$(curl -sS -o /dev/null --max-time 12 -w '%{http_code}' "$WEB_ORIGIN/health" 2>/dev/null || true)"
+            auth="$(curl -sS -o /dev/null --max-time 12 -w '%{http_code}' "$WEB_ORIGIN/api/v1/auth/me" 2>/dev/null || true)"
+            if [[ "$health" == 200 && "$auth" == 401 ]]; then ok=true; break; fi
+            sleep 10
+          done
+          [[ "$ok" == true ]] || { echo "::error::Target-only Web/API smoke not healthy. WebHTTP=$health APIHTTP=$auth"; exit 1; }
+          az containerapp show --subscription "$SID" -g "$RG" -n "$WEB" --only-show-errors -o json \
+            > "$RUNNER_TEMP/web-after-private.json"
+          python3 - <<'PY'
+          import os,json,sys
+          d=json.load(open(os.path.join(os.environ['RUNNER_TEMP'],'web-after-private.json')))
+          p=d.get('properties') or {}
+          c=(p.get('template') or {}).get('containers') or []
+          valid=(d.get('name')==os.environ['WEB'] and p.get('runningStatus')=='Running' and
+                 p.get('latestReadyRevisionName') and p.get('latestRevisionName')==p.get('latestReadyRevisionName') and
+                 len(c)==1 and c[0].get('image')==os.environ['NEW_WEB_IMAGE'])
+          if not valid:sys.exit('::error::Destination Web revision readiness/image mismatch.')
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:
+              f.write('### Isolated WorkloadProfiles Web proxy repair verified\n')
+              f.write('- New Web image and latest ready revision: matched\n')
+              f.write('- Web health: HTTP 200\n')
+              f.write('- Anonymous Web-to-private-API auth endpoint: HTTP 401\n')
+              f.write('- Internal API hostname includes required .internal. segment\n')
+              f.write('- Source DEV, DNS, API, Grader, PostgreSQL and media untouched\n')
+          PY
+          echo 'Target Web/API proxy and new Web revision verified.'
+
+      - name: Remove ephemeral tokens, source and private diagnostics
+        if: always()
+        shell: bash
+        run: |
+          docker logout crcoderatsmigc26m0911.azurecr.io >/dev/null 2>&1 || true
+          az acr token credential delete --registry crcoderatsmigc26m0911 --name coderats-standard-build --password1 \
+            --subscription "${SID:-}" --only-show-errors -o none >/dev/null 2>&1 || true
+          rm -rf web-src
+          rm -f "$RUNNER_TEMP"/wp-env-private.json "$RUNNER_TEMP"/wp-web-private.json \
+            "$RUNNER_TEMP"/wp-api-private.json "$RUNNER_TEMP"/web-after-private.json \
+            "$RUNNER_TEMP"/acr-private.log "$RUNNER_TEMP"/docker-login-private.log \
+            "$RUNNER_TEMP"/build-private.log "$RUNNER_TEMP"/web-update-private.log
+          az logout -o none >/dev/null 2>&1 || true

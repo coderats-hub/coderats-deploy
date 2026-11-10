@@ -120,11 +120,19 @@ jobs:
           set -euo pipefail
           if ! az acr build --registry "$ACR" --subscription "$SID" \
             --image "web-coderats-base:mirror-db35f8c2f5fb" \
-            --file web-src/Dockerfile \
+            --file Dockerfile \
             --build-arg "NEXT_PUBLIC_API_URL=$MIGRATION_WEB_ORIGIN" \
             --build-arg "API_PROXY_TARGET=http://ca-coderatsmig-api-c26m0911" \
             web-src > "$RUNNER_TEMP/mirror-web-build.log" 2>&1; then
-            echo "::error::New-subscription Web container image build failed; no private build log published."
+            if grep -qiE 'TasksOperationsNotAllowed|ACR Tasks.*disabled|run.*not supported' "$RUNNER_TEMP/mirror-web-build.log"; then
+              echo "::error::Azure registry Tasks quick-build is unavailable for this subscription."
+            elif grep -qiE 'Unauthorized|Forbidden|AuthorizationFailed|not authorized|DENIED' "$RUNNER_TEMP/mirror-web-build.log"; then
+              echo "::error::Azure registry build lacked permission."
+            elif grep -qiE 'Dockerfile.*not found|failed to read dockerfile|Dockerfile.*does not exist' "$RUNNER_TEMP/mirror-web-build.log"; then
+              echo "::error::Azure registry build could not locate Dockerfile in context."
+            else
+              echo "::error::New-subscription Web image build failed; private logs retained only on ephemeral runner."
+            fi
             exit 1
           fi
           echo "Mirror Web image built from pinned source."
@@ -135,7 +143,7 @@ jobs:
           set -euo pipefail
           if ! az acr build --registry "$ACR" --subscription "$SID" \
             --image "api-coderats-base:mirror-899b5e0fdd5d" \
-            --file api-src/Dockerfile \
+            --file Dockerfile \
             api-src > "$RUNNER_TEMP/mirror-api-build.log" 2>&1; then
             echo "::error::New-subscription API container image build failed; no private build log published."
             exit 1
@@ -148,7 +156,7 @@ jobs:
           set -euo pipefail
           if ! az acr build --registry "$ACR" --subscription "$SID" \
             --image "api-grader-coderats:mirror-a126b16097ef" \
-            --file grader-src/Dockerfile.cloud \
+            --file Dockerfile.cloud \
             grader-src > "$RUNNER_TEMP/mirror-grader-build.log" 2>&1; then
             echo "::error::New-subscription Grader container image build failed; no private build log published."
             exit 1

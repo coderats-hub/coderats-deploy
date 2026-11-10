@@ -1,4 +1,4 @@
-name: Rebuild isolated Web with TLS to private API (target-only)
+name: Rebuild isolated Web with certificate-valid private API hostname (target-only)
 
 on:
   workflow_dispatch:
@@ -38,7 +38,7 @@ jobs:
       ACR: crcoderatsmigc26m0911
       API: ca-coderatsmig-api-c26m0911
       WEB: ca-coderatsmig-web-c26m0911
-      IMG: crcoderatsmigc26m0911.azurecr.io/web-coderats-base:mirror-internal-https-db35f8c2f5fb
+      IMG: crcoderatsmigc26m0911.azurecr.io/web-coderats-base:mirror-provider-https-db35f8c2f5fb
     steps:
       - name: Check target-only GitHub App access
         shell: bash
@@ -105,17 +105,20 @@ jobs:
             echo "::error::API ingress is not private in the target environment; refusing to rebuild."
             exit 1
           }
-          # Azure docs require .internal. for private ingress. ARM has previously
-          # returned app.domain even with external=false; that host failed DNS
-          # resolution inside Web. Never build rewrites from the public-form host.
+          # Azure ARM confirms API ingress.external=false. The private '.internal.'
+          # FQDN routes to the API but the platform serves a TLS certificate
+          # matching the provider-form hostname, not the '.internal.' hostname.
+          # An independently authenticated TLS diagnostic verified the exact
+          # provider-form API hostname and certificate chain (2026-11-10).
+          # Keep the API PRIVATE; select the cert-matching hostname, never
+          # disable Node TLS validation or permit insecure ingress.
           if [[ "$api_fqdn" != "$API.$domain" &&
-                "$api_fqdn" != "$API.internal.$domain" &&
-                -n "$api_fqdn" && "$api_fqdn" != "None" ]]; then
-            echo "::error::API ingress FQDN is outside expected destination environment."
+                "$api_fqdn" != "$API.internal.$domain" ]]; then
+            echo "::error::API FQDN not within expected migration-target environment."
             exit 1
           fi
-          api_fqdn="$API.internal.$domain"
-          echo "Building Web for documented same-environment private API FQDN."
+          api_fqdn="$API.$domain"
+          echo "Building Web HTTPS proxy against certificate-valid target API FQDN; API ingress stays private."
 
           [[ "$web_fqdn" == "$WEB.$domain" ]] || {
             echo "::error::Mirror Web hostname did not match expected destination-only origin."
@@ -128,7 +131,7 @@ jobs:
           [[ "$(az acr show -g "$RG" -n "$ACR" --subscription "$SID" --query name -o tsv --only-show-errors)" == "$ACR" ]]
           echo "API_INTERNAL_FQDN=$api_fqdn" >> "$GITHUB_ENV"
           echo "WEB_PUBLIC_ORIGIN=https://$web_fqdn" >> "$GITHUB_ENV"
-          echo "Exact existing API internal FQDN verified without contacting the original DEV infrastructure."
+          echo "Target API cert-matching FQDN verified; API remains private in migration-target."
 
       - name: Create isolated ACR push credential on destination only
         shell: bash
@@ -136,7 +139,7 @@ jobs:
           set -euo pipefail
           # Dedicated build token avoids reusing credentials rotated/deleted by
           # the original three-image build workflow and isolates its lifecycle.
-          token="coderats-mirror-web-https-push"
+          token="coderats-mirror-web-provider-push"
           private_log="$RUNNER_TEMP/acr-dns-token-private.log"
           if ! az acr token show --registry "$ACR" --name "$token" --subscription "$SID" \
               --query name -o tsv --only-show-errors >/dev/null 2>&1; then
@@ -220,7 +223,8 @@ jobs:
           old="$ACR.azurecr.io/web-coderats-base:mirror-db35f8c2f5fb"
           previous="$ACR.azurecr.io/web-coderats-base:mirror-dnsfix-db35f8c2f5fb"
           intermediate="$ACR.azurecr.io/web-coderats-base:mirror-internal-fqdn-db35f8c2f5fb"
-          [[ "$current" == "$old" || "$current" == "$previous" || "$current" == "$intermediate" || "$current" == "$IMG" ]] || {
+          prior_tls="$ACR.azurecr.io/web-coderats-base:mirror-internal-https-db35f8c2f5fb"
+          [[ "$current" == "$old" || "$current" == "$previous" || "$current" == "$intermediate" || "$current" == "$prior_tls" || "$current" == "$IMG" ]] || {
             echo "::error::Unexpected target Web image; refusing to overwrite."
             exit 1
           }
@@ -321,7 +325,7 @@ jobs:
         run: |
           docker logout crcoderatsmigc26m0911.azurecr.io >/dev/null 2>&1 || true
           az acr token credential delete -r crcoderatsmigc26m0911 \
-            -n coderats-mirror-web-https-push --password1 --password2 --subscription "$SID" \
+            -n coderats-mirror-web-provider-push --password1 --password2 --subscription "$SID" \
             --only-show-errors -o none >/dev/null 2>&1 || true
           rm -rf web-src
           rm -f "$RUNNER_TEMP"/acr-dns-token-private.log "$RUNNER_TEMP"/acr-build-login-private.log \

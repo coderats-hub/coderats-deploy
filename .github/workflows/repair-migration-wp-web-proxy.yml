@@ -25,7 +25,7 @@ jobs:
       github.repository == 'coderats-hub/coderats-deploy' &&
       github.ref == 'refs/heads/main' &&
       ((github.event_name == 'workflow_dispatch' && inputs.confirmation == 'FIX_WP_WEB_PROXY') ||
-       (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'ci(migration): fix wp web internal api fqdn once')))
+       (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'ci(migration): repair wp web with isolated acr token once')))
     runs-on: ubuntu-latest
     environment: migration-target
     timeout-minutes: 65
@@ -107,12 +107,19 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          token=coderats-standard-build
-          [[ "$(az acr token show --registry "$ACR" --name "$token" --subscription "$SID" --query name -o tsv --only-show-errors)" == "$token" ]] || {
-            echo '::error::Scoped destination ACR token missing.'; exit 1;
-          }
+          # The initial rollout removed its build token credential on cleanup.
+          # Use a separate short-lived token to avoid stale/empty password state.
+          token=coderats-wp-web-repair
+          if ! az acr token show --registry "$ACR" --name "$token" --subscription "$SID" --query name \
+               -o tsv --only-show-errors >/dev/null 2>&1; then
+            if ! az acr token create --registry "$ACR" --name "$token" \
+              --scope-map _repositories_push --subscription "$SID" --only-show-errors -o none \
+              > "$RUNNER_TEMP/acr-private.log" 2>&1; then
+              echo '::error::Scoped temporary ACR token creation failed.'; exit 1
+            fi
+          fi
           az acr token update --registry "$ACR" --name "$token" --status enabled --subscription "$SID" --only-show-errors -o none \
-            > "$RUNNER_TEMP/acr-private.log" 2>&1 || { echo '::error::Scoped destination ACR token cannot be enabled.'; exit 1; }
+            > "$RUNNER_TEMP/acr-private.log" 2>&1 || { echo '::error::Scoped temporary ACR token cannot be enabled.'; exit 1; }
           password="$(az acr token credential generate --registry "$ACR" --name "$token" --password1 --expiration-in-days 1 \
             --subscription "$SID" --query 'passwords[0].value' -o tsv --only-show-errors)"
           [[ -n "$password" ]] || { echo '::error::Scoped destination registry credential unavailable.'; exit 1; }
@@ -191,7 +198,9 @@ jobs:
         shell: bash
         run: |
           docker logout crcoderatsmigc26m0911.azurecr.io >/dev/null 2>&1 || true
-          az acr token credential delete --registry crcoderatsmigc26m0911 --name coderats-standard-build --password1 \
+          az acr token credential delete --registry crcoderatsmigc26m0911 --name coderats-wp-web-repair --password1 \
+            --subscription "${SID:-}" --only-show-errors -o none >/dev/null 2>&1 || true
+          az acr token delete --registry crcoderatsmigc26m0911 --name coderats-wp-web-repair --yes \
             --subscription "${SID:-}" --only-show-errors -o none >/dev/null 2>&1 || true
           rm -rf web-src
           rm -f "$RUNNER_TEMP"/wp-env-private.json "$RUNNER_TEMP"/wp-web-private.json \

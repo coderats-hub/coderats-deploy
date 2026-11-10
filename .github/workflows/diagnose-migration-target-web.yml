@@ -90,7 +90,8 @@ jobs:
             fi
           fi
           echo "- Expected Web origin based on CAE default domain: https://$WEB.$domain" >> "$GITHUB_STEP_SUMMARY"
-          echo 'No raw app configuration or logs were printed.' 
+          echo 'No raw app configuration or logs were printed.'
+          cat "$GITHUB_STEP_SUMMARY"
 
       - name: Inspect recent Web ARM activity and report only allowlisted error codes
         shell: bash
@@ -138,6 +139,7 @@ jobs:
           else
             echo '- ARM activity event query: unavailable (no raw diagnostics exposed)' >> "$GITHUB_STEP_SUMMARY"
           fi
+          cat "$GITHUB_STEP_SUMMARY"
 
       - name: Print safe summary
         if: always()

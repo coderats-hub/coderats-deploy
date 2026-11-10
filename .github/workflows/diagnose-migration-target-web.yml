@@ -423,7 +423,7 @@ jobs:
           with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:
               f.write("### Web revision / startup diagnostics\n")
               f.write("- ARM Web running="+safe(j.get("running"))+", provisioning="+safe(j.get("provisioning"))+"\n")
-              f.write("- Image matches expected="+str(j.get("image")=="crcoderatsmigc26m0911.azurecr.io/web-coderats-base:mirror-db35f8c2f5fb")+"\n")
+              f.write("- Declared image tag="+("dnsfix" if str(j.get("image","")).endswith(":mirror-dnsfix-db35f8c2f5fb") else ("original" if str(j.get("image","")).endswith(":mirror-db35f8c2f5fb") else "other"))+"\n")
               f.write("- ARM latest revision present="+str(bool(j.get("latest")))+"\n")
               f.write("- ARM latest ready revision present="+str(bool(j.get("ready")))+"\n")
               ingress=j.get("ingress") or {}
@@ -432,7 +432,10 @@ jobs:
                   f.write("- Revision count="+str(len(revisions))+"\n")
                   for r in revisions[-5:]:
                       p=r.get("properties") or {}
-                      f.write("  - revision running="+safe(p.get("runningState"))+
+                      containers=(p.get("template") or {}).get("containers") or []
+                      im=containers[0].get("image","") if containers else ""
+                      tag=("dnsfix" if im.endswith(":mirror-dnsfix-db35f8c2f5fb") else ("original" if im.endswith(":mirror-db35f8c2f5fb") else "unavailable"))
+                      f.write("  - revision imageTag="+tag+", running="+safe(p.get("runningState"))+
                               ", health="+safe(p.get("healthState"))+
                               ", provisioning="+safe(p.get("provisioningState"))+
                               ", active="+str(p.get("active") is True)+"\n")

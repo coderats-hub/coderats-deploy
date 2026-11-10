@@ -222,6 +222,27 @@ jobs:
           [[ "$SID" == 'da3650a9-e291-43f1-ae4b-9dcc8ff84239' ]]
           [[ "$TID" == '1cf74c7e-fcd9-46f7-8a9d-e699d3529003' ]]
           echo '### Azure Files mount registration diagnostics (read-only)' >> "$GITHUB_STEP_SUMMARY"
+          az containerapp env show --subscription "$SID" -g "$RG" -n cae-coderatsmig-standard-c26m0911 \
+            --only-show-errors -o json > "$RUNNER_TEMP/standard-mode-private.json"
+          python3 - <<'PY'
+          import json,os
+          d=json.load(open(os.path.join(os.environ['RUNNER_TEMP'],'standard-mode-private.json')))
+          p=d.get('properties') or {}
+          mode=p.get('environmentMode')
+          kind=d.get('kind')
+          def classified(value):
+              v=str(value or '').lower()
+              if not v: return 'absent'
+              return 'Express' if v=='express' else ('WorkloadProfiles' if v=='workloadprofiles' else 'other')
+          profiles=p.get('workloadProfiles') or []
+          consumption=any(isinstance(x,dict) and (x.get('name')=='Consumption' or x.get('workloadProfileType')=='Consumption') for x in profiles)
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:
+              f.write('- New CAE reported environmentMode: '+classified(mode)+'\n')
+              f.write('- New CAE reported kind: '+classified(kind)+'\n')
+              f.write('- New CAE has Consumption workload profile: '+str(bool(consumption))+'\n')
+              f.write('- New CAE provisioning succeeded: '+str(p.get('provisioningState')=='Succeeded')+'\n')
+          PY
+          rm -f "$RUNNER_TEMP/standard-mode-private.json"
           if az containerapp env storage list --subscription "$SID" -g "$RG" -n "$CAE" \
             --only-show-errors -o json > "$RUNNER_TEMP/env-storages-private.json" 2>/dev/null; then
             python3 - <<'PY'

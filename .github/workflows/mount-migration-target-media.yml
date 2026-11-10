@@ -6,9 +6,6 @@ on:
         description: "Type MOUNT_TARGET_MEDIA to attach existing target share"
         required: true
         type: string
-  push:
-    branches: [main]
-    paths: [".github/workflows/mount-migration-target-media.yml"]
 
 permissions:
   contents: read
@@ -23,8 +20,8 @@ jobs:
     if: >-
       github.repository == 'coderats-hub/coderats-deploy' &&
       github.ref == 'refs/heads/main' &&
-      ((github.event_name == 'workflow_dispatch' && inputs.confirmation == 'MOUNT_TARGET_MEDIA') ||
-       (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'ci(migration): classify isolated target storage failure once')))
+      github.event_name == 'workflow_dispatch' &&
+      inputs.confirmation == 'MOUNT_TARGET_MEDIA'
     runs-on: ubuntu-latest
     environment: migration-target
     timeout-minutes: 25

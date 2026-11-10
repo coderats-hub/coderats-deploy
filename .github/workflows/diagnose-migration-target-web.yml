@@ -141,6 +141,40 @@ jobs:
           fi
           cat "$GITHUB_STEP_SUMMARY"
 
+      - name: Inspect destination environment Container Apps quotas (read-only)
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SID" == "da3650a9-e291-43f1-ae4b-9dcc8ff84239" ]]
+          if az containerapp env list-usages --subscription "$SID" \
+            -g "$RG" -n "$CAE" --only-show-errors -o json \
+            > "$RUNNER_TEMP/mirror-quota-data.json" 2>/dev/null; then
+            python3 - <<'PY'
+          import json,os,re
+          p=os.path.join(os.environ["RUNNER_TEMP"],"mirror-quota-data.json")
+          v=json.load(open(p))
+          if isinstance(v,dict): v=v.get("value",v.get("usages",[]))
+          if not isinstance(v,list): v=[]
+          safe=lambda x: str(x) if re.fullmatch(r"[A-Za-z0-9 _./()-]{1,85}",str(x)) else "unavailable"
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:
+              f.write("### Destination Container Apps environment quotas\n")
+              if not v: f.write("- No per-environment quota records returned\n")
+              for x in v[:30]:
+                  if not isinstance(x,dict): continue
+                  n=x.get("name",{})
+                  n=(n.get("localizedValue") or n.get("value","")) if isinstance(n,dict) else n
+                  c=x.get("currentValue",x.get("currentUsage",""))
+                  l=x.get("limit",x.get("maximum",""))
+                  if not isinstance(c,(int,float)) or not isinstance(l,(int,float)): continue
+                  f.write("- "+safe(n)+": usage="+str(c)+"; limit="+str(l)+"\n")
+          PY
+          else
+            echo "### Destination Container Apps environment quotas" >> "$GITHUB_STEP_SUMMARY"
+            echo "- Azure CLI quota query unavailable; no failure details published" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          cat "$GITHUB_STEP_SUMMARY"
+          rm -f "$RUNNER_TEMP/mirror-quota-data.json"
+
       - name: Print safe summary
         if: always()
         shell: bash

@@ -25,7 +25,7 @@ jobs:
       github.repository == 'coderats-hub/coderats-deploy' &&
       github.ref == 'refs/heads/main' &&
       ((github.event_name == 'workflow_dispatch' && inputs.confirmation == 'CREATE_TARGET_STANDARD_CAE') ||
-       (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'ci(migration): create isolated standard cae once')))
+       (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'ci(migration): provision standard cae after verified metadata')))
     runs-on: ubuntu-latest
     environment: migration-target
     timeout-minutes: 45
@@ -59,10 +59,13 @@ jobs:
           d=json.load(open(os.path.join(os.environ['RUNNER_TEMP'],'old-env-private.json')))
           if d.get('name')!=os.environ['OLD_CAE']:
               sys.exit('::error::Existing mirror environment not found; refusing new provisioning.')
-          mode=(d.get('properties') or {}).get('environmentMode','')
-          if str(mode).lower()!='express':
-              sys.exit('::error::Existing mirror mode differs from confirmed Express diagnosis.')
-          print('Original mirror Express environment confirmed; existing apps will not be modified.')
+          p=d.get('properties') or {}
+          mode=p.get('environmentMode')
+          if mode not in (None,'','Express','express'):
+              sys.exit('::error::Existing mirror mode reports a non-Express value; aborting.')
+          if p.get('provisioningState')!='Succeeded' or not str(p.get('defaultDomain','')).endswith('.brazilsouth.azurecontainerapps.io'):
+              sys.exit('::error::Existing mirror metadata unexpected; refusing provision.')
+          print('Original mirror environment identity/state confirmed; Express mode already verified from ARM rejection.')
           PY
 
       - name: Provision separate WorkloadProfiles Consumption environment only

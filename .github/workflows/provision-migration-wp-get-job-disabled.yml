@@ -7,9 +7,6 @@ on:
         description: "Type CREATE_DISABLED_GET_JOB"
         required: true
         type: string
-  push:
-    branches: [main]
-    paths: [".github/workflows/provision-migration-wp-get-job-disabled.yml"]
 
 permissions:
   contents: read
@@ -24,8 +21,7 @@ jobs:
     if: >-
       github.repository == 'coderats-hub/coderats-deploy' &&
       github.ref == 'refs/heads/main' &&
-      ((github.event_name == 'workflow_dispatch' && inputs.confirmation == 'CREATE_DISABLED_GET_JOB') ||
-       (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'ci(migration): create disabled get scaffold once')))
+      github.event_name == 'workflow_dispatch' && inputs.confirmation == 'CREATE_DISABLED_GET_JOB'
     runs-on: ubuntu-latest
     environment: migration-target
     timeout-minutes: 25

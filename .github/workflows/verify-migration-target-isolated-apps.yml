@@ -422,6 +422,11 @@ jobs:
                   events.append(a)
           groups={}
           errors=[]
+          hints=set()
+          safe_terms=('LogAnalyticsConfiguration','appLogsConfiguration','sharedKey','customerId',
+                      'workloadProfiles','workloadProfileType','environmentMode','Consumption',
+                      'location','quota','notSupported','invalidRequest','zoneRedundant',
+                      'AppInsightsConfiguration','subnet','vnetConfiguration','name')
           def cls(message):
               try: obj=json.loads(message) if isinstance(message,str) else message
               except (ValueError,TypeError): obj={}
@@ -442,11 +447,16 @@ jobs:
               groups[status]=groups.get(status,0)+1
               if status=='Failed':
                   p=a.get('properties') or {}
-                  errors.append(cls(p.get('statusMessage','') if isinstance(p,dict) else ''))
+                  message=p.get('statusMessage','') if isinstance(p,dict) else ''
+                  errors.append(cls(message))
+                  raw=str(message)[:12000].lower()
+                  for hint in safe_terms:
+                      if hint.lower() in raw: hints.add(hint)
           with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:
               f.write('- Explicit candidate ARM write event count: '+str(len(events))+'\n')
               f.write('- Candidate ARM statuses: '+(', '.join(k+':'+str(v) for k,v in sorted(groups.items())) if groups else 'none')+'\n')
               f.write('- Candidate ARM failure codes: '+(', '.join(sorted(set(errors))) if errors else 'none observed')+'\n')
+              f.write('- Candidate ARM safe validation keywords: '+(', '.join(sorted(hints)) if hints else 'none detected')+'\n')
               f.write('- Raw Azure error messages and identifiers were not published\n')
           PY
           else

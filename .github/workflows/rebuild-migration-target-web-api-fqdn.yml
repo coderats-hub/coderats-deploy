@@ -136,12 +136,12 @@ jobs:
           set -euo pipefail
           # Dedicated build token avoids reusing credentials rotated/deleted by
           # the original three-image build workflow and isolates its lifecycle.
-          token="coderats-mirror-web-internal-push"
+          token="coderats-mirror-web-https-push"
           private_log="$RUNNER_TEMP/acr-dns-token-private.log"
           if ! az acr token show --registry "$ACR" --name "$token" --subscription "$SID" \
               --query name -o tsv --only-show-errors >/dev/null 2>&1; then
             if ! az acr token create --registry "$ACR" --name "$token" --scope-map _repositories_push \
-                --subscription "$SID" --only-show-errors -o none > "$private_log" 2>&1; then
+                --no-passwords --subscription "$SID" --only-show-errors -o none > "$private_log" 2>&1; then
               echo "::error::Web-only ACR push token creation failed; raw Azure output withheld."
               exit 1
             fi
@@ -159,13 +159,35 @@ jobs:
             echo "::error::Web-only ACR push credential generation failed; raw Azure output withheld."
             exit 1
           fi
-          [[ -n "$pass" ]] || { echo "::error::Web-only push credential empty."; exit 1; }
-          echo "::add-mask::$pass"
-          printf '%s' "$pass" | docker login "$ACR.azurecr.io" --username "$token" \
-            --password-stdin > "$RUNNER_TEMP/acr-build-login-private.log" 2>&1 || {
-              echo "::error::Destination ACR token login failed; no raw logs printed."
+          if [[ -z "$pass" || "$pass" == "None" ]]; then
+            # ACR occasionally returns no password1 in the first generation result.
+            # Generate password2, not another token and never print the secret.
+            if ! pass="$(az acr token credential generate --registry "$ACR" --name "$token" \
+                --password2 --expiration-in-days 1 --subscription "$SID" \
+                --query 'passwords[0].value' -o tsv --only-show-errors 2>"$private_log")"; then
+              echo "::error::ACR push credential fallback generation failed; raw Azure output withheld."
               exit 1
-            }
+            fi
+          fi
+          [[ -n "$pass" && "$pass" != "None" ]] || {
+            echo "::error::Both ACR push credential slots returned no usable value."
+            exit 1
+          }
+          echo "::add-mask::$pass"
+          logged_in="false"
+          # New token passwords may take ~60s to propagate across registry replicas.
+          for attempt in 1 2 3 4 5; do
+            if printf '%s' "$pass" | docker login "$ACR.azurecr.io" --username "$token" \
+                --password-stdin > "$RUNNER_TEMP/acr-build-login-private.log" 2>&1; then
+              logged_in="true"
+              break
+            fi
+            sleep 15
+          done
+          [[ "$logged_in" == "true" ]] || {
+            echo "::error::Target ACR push login failed after propagation checks; raw output withheld."
+            exit 1
+          }
           unset pass
           echo "Temporary destination-only push credential activated."
 
@@ -299,7 +321,7 @@ jobs:
         run: |
           docker logout crcoderatsmigc26m0911.azurecr.io >/dev/null 2>&1 || true
           az acr token credential delete -r crcoderatsmigc26m0911 \
-            -n coderats-mirror-web-internal-push --password1 --subscription "$SID" \
+            -n coderats-mirror-web-https-push --password1 --password2 --subscription "$SID" \
             --only-show-errors -o none >/dev/null 2>&1 || true
           rm -rf web-src
           rm -f "$RUNNER_TEMP"/acr-dns-token-private.log "$RUNNER_TEMP"/acr-build-login-private.log \

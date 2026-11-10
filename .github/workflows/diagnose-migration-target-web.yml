@@ -774,6 +774,81 @@ jobs:
           cat "$GITHUB_STEP_SUMMARY"
           rm -f "$headers"
 
+      - name: Inspect HTTPS Web image, API response and safe TLS/network error classes
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SID" == "da3650a9-e291-43f1-ae4b-9dcc8ff84239" ]]
+          [[ "$(az account show --query id -o tsv)" == "$SID" ]]
+          az containerapp show --subscription "$SID" -g "$RG" -n "$WEB" \
+            --query '{image:properties.template.containers[0].image,env:properties.template.containers[0].env,provision:properties.provisioningState,ingress:properties.configuration.ingress.fqdn}' \
+            --only-show-errors -o json > "$RUNNER_TEMP/web-https-arm-private.json"
+          az containerapp revision list --subscription "$SID" -g "$RG" -n "$WEB" \
+            --only-show-errors -o json > "$RUNNER_TEMP/web-https-revisions-private.json"
+          python3 - <<'PY'
+          import json,os
+          base=os.environ["RUNNER_TEMP"]
+          obj=json.load(open(os.path.join(base,"web-https-arm-private.json")))
+          rev=json.load(open(os.path.join(base,"web-https-revisions-private.json")))
+          img=obj.get("image","")
+          expected=":mirror-internal-https-db35f8c2f5fb"
+          runtime=next((x.get("value") for x in obj.get("env",[]) if isinstance(x,dict) and x.get("name")=="API_PROXY_TARGET"),"")
+          origin="https://ca-coderatsmig-api-c26m0911.internal.greenground-5275c6f5.brazilsouth.azurecontainerapps.io"
+          found=[]
+          for r in rev if isinstance(rev,list) else []:
+              p=r.get("properties") or {}
+              containers=(p.get("template") or {}).get("containers") or []
+              if containers and str(containers[0].get("image","")).endswith(expected):
+                  found.append(p)
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:
+              f.write("### Current Web HTTPS proxy revision\n")
+              f.write("- Declared image uses HTTPS private-API build: "+str(str(img).endswith(expected))+"\n")
+              f.write("- Web API_PROXY_TARGET is HTTPS internal ingress: "+str(runtime==origin)+"\n")
+              f.write("- Web ARM provisioning state: "+str(obj.get("provision") if obj.get("provision") in ("Succeeded","Failed","InProgress") else "other")+"\n")
+              f.write("- HTTPS image revisions found: "+str(len(found))+"\n")
+              for p in found[-3:]:
+                  f.write("  - revision active="+str(p.get("active") is True)+
+                    ", health="+str(p.get("healthState"))+
+                    ", running="+str(p.get("runningState"))+
+                    ", provisioning="+str(p.get("provisioningState"))+"\n")
+              f.write("- Raw Web environment, ARM object and revision identifiers withheld\n")
+          PY
+          web_fqdn="$(az containerapp show --subscription "$SID" -g "$RG" -n "$WEB" \
+            --query properties.configuration.ingress.fqdn -o tsv --only-show-errors)"
+          [[ "$web_fqdn" == "$WEB".*.brazilsouth.azurecontainerapps.io ]]
+          for p in /health /api/v1/auth/me; do
+            status="$(curl -sS -o /dev/null --max-redirs 0 --connect-timeout 7 --max-time 15 \
+              -w '%{http_code}' "https://$web_fqdn$p" 2>/dev/null || true)"
+            [[ "$status" =~ ^[0-9]{3}$ ]] || status=unavailable
+            echo "- Web $p HTTP without redirects: $status" >> "$GITHUB_STEP_SUMMARY"
+          done
+          logfile="$RUNNER_TEMP/web-https-console-private.log"
+          if az containerapp logs show -g "$RG" -n "$WEB" --subscription "$SID" \
+            --type console --tail 200 --only-show-errors > "$logfile" 2>&1; then
+            LOGFILE="$logfile" python3 - <<'PY'
+          import os,re
+          s=open(os.environ["LOGFILE"],errors="replace").read().lower()
+          classes={
+            "dns":r"enotfound|eai_again|getaddrinfo",
+            "tls-cert":r"unable_to_verify_leaf_signature|unable_to_get_issuer_cert|err_tls_cert_altname_invalid|self.signed.certificate|certificate verify|certificate.*expired|cert_has_expired",
+            "tls-handshake":r"eproto|tls handshake|ssl routines|wrong version number|alert bad certificate|tlsv1 alert",
+            "proxy-connect":r"econnrefused|econnreset|etimedout|socket hang up|fetch failed|proxy error|und_err",
+            "server":r"typeerror:|referenceerror:|internalservererror|status=500",
+            "redirect":r"status=301|permanent redirect|redirected|moved permanently"
+          }
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:
+              f.write("### Web HTTPS proxy recent console signals\n")
+              for name,p in classes.items():
+                  f.write("- "+name+"="+str(min(999,len(re.findall(p,s))))+"\n")
+              f.write("- Raw console text and response bodies withheld\n")
+          PY
+          else
+            echo "- Web console diagnostic unavailable" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          cat "$GITHUB_STEP_SUMMARY"
+          rm -f "$RUNNER_TEMP/web-https-arm-private.json" \
+            "$RUNNER_TEMP/web-https-revisions-private.json" "$logfile"
+
       - name: Print safe summary
         if: always()
         shell: bash

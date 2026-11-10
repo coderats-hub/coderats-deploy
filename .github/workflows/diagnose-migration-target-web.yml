@@ -399,6 +399,105 @@ jobs:
           rm -f "$RUNNER_TEMP/identity.json" "$RUNNER_TEMP/app-private-metadata.json"
           cat "$GITHUB_STEP_SUMMARY"
 
+      - name: Diagnose Web revision, replicas and log error categories (read-only)
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SID" == "da3650a9-e291-43f1-ae4b-9dcc8ff84239" ]]
+          [[ "$(az account show --query id -o tsv)" == "$SID" ]]
+          if ! az containerapp show -g "$RG" -n "$WEB" --subscription "$SID" \
+            --query '{running:properties.runningStatus,provisioning:properties.provisioningState,latest:properties.latestRevisionName,ready:properties.latestReadyRevisionName,image:properties.template.containers[0].image,ingress:properties.configuration.ingress}' \
+            -o json --only-show-errors > "$RUNNER_TEMP/web-runtime.json"; then
+            echo "::error::Target Web ARM resource not readable."
+            exit 1
+          fi
+          az containerapp revision list -g "$RG" -n "$WEB" --subscription "$SID" \
+            --only-show-errors -o json > "$RUNNER_TEMP/web-revisions.json" 2>/dev/null || echo '[]' > "$RUNNER_TEMP/web-revisions.json"
+          python3 - <<'PY'
+          import json,os,re
+          root=os.environ["RUNNER_TEMP"]
+          j=json.load(open(os.path.join(root,"web-runtime.json")))
+          revisions=json.load(open(os.path.join(root,"web-revisions.json")))
+          enum=re.compile(r"^[A-Za-z0-9_. -]{1,50}$")
+          safe=lambda s: str(s) if enum.fullmatch(str(s)) else "unavailable"
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:
+              f.write("### Web revision / startup diagnostics\n")
+              f.write("- ARM Web running="+safe(j.get("running"))+", provisioning="+safe(j.get("provisioning"))+"\n")
+              f.write("- Image matches expected="+str(j.get("image")=="crcoderatsmigc26m0911.azurecr.io/web-coderats-base:mirror-db35f8c2f5fb")+"\n")
+              f.write("- ARM latest revision present="+str(bool(j.get("latest")))+"\n")
+              f.write("- ARM latest ready revision present="+str(bool(j.get("ready")))+"\n")
+              ingress=j.get("ingress") or {}
+              f.write("- Ingress external="+str(ingress.get("external") is True)+", port=3000: "+str(ingress.get("targetPort")==3000)+"\n")
+              if isinstance(revisions,list):
+                  f.write("- Revision count="+str(len(revisions))+"\n")
+                  for r in revisions[-5:]:
+                      p=r.get("properties") or {}
+                      f.write("  - revision running="+safe(p.get("runningState"))+
+                              ", health="+safe(p.get("healthState"))+
+                              ", provisioning="+safe(p.get("provisioningState"))+
+                              ", active="+str(p.get("active") is True)+"\n")
+          PY
+          rev="$(az containerapp show -g "$RG" -n "$WEB" --subscription "$SID" \
+            --query properties.latestRevisionName -o tsv --only-show-errors)"
+          if [[ "$rev" == "$WEB"--* ]]; then
+            if az containerapp replica list -g "$RG" -n "$WEB" --revision "$rev" \
+              --subscription "$SID" --only-show-errors -o json > "$RUNNER_TEMP/web-replicas.json" 2>/dev/null; then
+              python3 - <<'PY'
+          import json,os,re
+          p=os.path.join(os.environ["RUNNER_TEMP"],"web-replicas.json")
+          v=json.load(open(p))
+          if not isinstance(v,list): v=[]
+          safe=lambda s: str(s) if re.fullmatch(r"[A-Za-z0-9 _.-]{1,48}",str(s)) else "unknown"
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:
+              f.write("- Replica count="+str(len(v))+"\n")
+              for x in v[-3:]:
+                  p=x.get("properties") or {}
+                  f.write("  - replica running="+safe(p.get("runningState"))+
+                          ", containers="+str(len(p.get("containers") or []))+"\n")
+                  for c in (p.get("containers") or []):
+                      f.write("    - ready="+str(c.get("ready"))+", restarts="+str(c.get("restartCount"))+"\n")
+          PY
+            else
+              echo "- Replica state query unavailable" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          fi
+          for typ in system console; do
+            log="$RUNNER_TEMP/web-$typ-internal.log"
+            if az containerapp logs show -g "$RG" -n "$WEB" --subscription "$SID" \
+              --type "$typ" --tail 100 --only-show-errors > "$log" 2>&1; then
+              result="available"
+            else
+              result="unavailable"
+            fi
+            LOG_TYPE="$typ" LOG_RESULT="$result" LOG_FILE="$log" python3 - <<'PY'
+          import os,re
+          raw=open(os.environ["LOG_FILE"],errors="replace").read().lower()
+          labels={
+            "image-pull":r"imagepull|image pull|failed to pull|manifest unknown|invalid image",
+            "registry-auth":r"unauthorized|authentication required|acrpull|registry.*denied",
+            "crash-exit":r"crashloop|crashing|exited with|container failure|terminated",
+            "node-module":r"cannot find module|module_not_found",
+            "node-runtime":r"uncaughtexception|unhandledrejection|typeerror:|referenceerror:",
+            "port-binding":r"eaddrinuse|address already in use",
+            "health-probe":r"probe failed|unhealthy|readiness|liveness",
+            "out-of-memory":r"oomkill|out of memory",
+            "dns-resolution":r"enotfound|eai_again",
+            "missing-api-proxy":r"api_proxy_target.*must be configured",
+            "normal-startup":r"ready in [0-9]|listening on|started server|next.js",
+          }
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:
+              f.write("### Sanitized "+os.environ["LOG_TYPE"]+" log signals\n")
+              f.write("- Log query="+os.environ["LOG_RESULT"]+"\n")
+              for label,pattern in labels.items():
+                  hits=len(re.findall(pattern,raw))
+                  if hits: f.write("- "+label+"="+str(min(hits,999))+"\n")
+              f.write("- Raw logs withheld, no secret values or user data printed\n")
+          PY
+          done
+          cat "$GITHUB_STEP_SUMMARY"
+          rm -f "$RUNNER_TEMP/web-runtime.json" "$RUNNER_TEMP/web-revisions.json" \
+            "$RUNNER_TEMP/web-replicas.json" "$RUNNER_TEMP/web-system-internal.log" "$RUNNER_TEMP/web-console-internal.log"
+
       - name: Print safe summary
         if: always()
         shell: bash

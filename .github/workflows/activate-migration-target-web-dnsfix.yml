@@ -1,0 +1,204 @@
+name: Activate prebuilt CodeRats Web DNS fix (new Azure only)
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        type: string
+        required: true
+        description: "Type ACTIVATE_MIGRATION_WEB_DNSFIX"
+  push:
+    branches: [main]
+    paths: [".github/workflows/activate-migration-target-web-dnsfix.yml"]
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: coderats-migration-target-web-dns-activation
+  cancel-in-progress: false
+
+jobs:
+  activate:
+    if: >-
+      github.repository == 'coderats-hub/coderats-deploy' &&
+      github.ref == 'refs/heads/main' &&
+      ((github.event_name == 'workflow_dispatch' && inputs.confirmation == 'ACTIVATE_MIGRATION_WEB_DNSFIX') ||
+       (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'ci(migration): activate isolated web dnsfix')))
+    runs-on: ubuntu-latest
+    environment: migration-target
+    timeout-minutes: 25
+    env:
+      SID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      TID: ${{ secrets.AZURE_TENANT_ID }}
+      RG: rg-coderats-migration-c26m0911
+      ACR: crcoderatsmigc26m0911
+      WEB: ca-coderatsmig-web-c26m0911
+      API: ca-coderatsmig-api-c26m0911
+      OLD: crcoderatsmigc26m0911.azurecr.io/web-coderats-base:mirror-db35f8c2f5fb
+      NEW: crcoderatsmigc26m0911.azurecr.io/web-coderats-base:mirror-dnsfix-db35f8c2f5fb
+    steps:
+      - name: Authenticate to new Azure only
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Verify destination, prebuilt Web image, original app and private API origin
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SID" == "da3650a9-e291-43f1-ae4b-9dcc8ff84239" ]]
+          [[ "$TID" == "1cf74c7e-fcd9-46f7-8a9d-e699d3529003" ]]
+          [[ "$(az account show --query id -o tsv)" == "$SID" ]]
+          [[ "$(az account show --query tenantId -o tsv)" == "$TID" ]]
+          az containerapp show --subscription "$SID" -g "$RG" -n "$WEB" \
+            --query '{image:properties.template.containers[0].image,ingress:properties.configuration.ingress,registries:properties.configuration.registries}' \
+            -o json --only-show-errors > "$RUNNER_TEMP/target-web-private.json"
+          az containerapp show --subscription "$SID" -g "$RG" -n "$API" \
+            --query '{external:properties.configuration.ingress.external,fqdn:properties.configuration.ingress.fqdn,running:properties.runningStatus}' \
+            -o json --only-show-errors > "$RUNNER_TEMP/target-api-private.json"
+          python3 - <<'PY'
+          import json,os,sys
+          base=os.environ["RUNNER_TEMP"]
+          web=json.load(open(os.path.join(base,"target-web-private.json")))
+          api=json.load(open(os.path.join(base,"target-api-private.json")))
+          image=web.get("image")
+          if image not in (os.environ["OLD"],os.environ["NEW"]):
+              print("::error::Web image differs from reviewed source; no changes allowed.")
+              sys.exit(1)
+          if not (web.get("ingress") or {}).get("external") is True:
+              print("::error::Web ingress is not external; no changes allowed.")
+              sys.exit(1)
+          if api.get("external") is not False or api.get("running")!="Running":
+              print("::error::Target API not private and Running; no changes allowed.")
+              sys.exit(1)
+          fqdn=api.get("fqdn") or ""
+          if not fqdn.startswith(os.environ["API"]+".") or not fqdn.endswith(".brazilsouth.azurecontainerapps.io"):
+              print("::error::Target API FQDN does not match expected private destination.")
+              sys.exit(1)
+          registries=web.get("registries") or []
+          if not any(r.get("server")==os.environ["ACR"]+".azurecr.io" and r.get("username")=="coderats-mirror-web-pull" for r in registries):
+              print("::error::Web-only ACR pull credential missing; no image changes allowed.")
+              sys.exit(1)
+          with open(os.environ["GITHUB_ENV"],"a") as f: f.write("TARGET_API_FQDN="+fqdn+"\n")
+          print("Destination-only Web/registry/API verified; Web image currently "+("old" if image==os.environ["OLD"] else "new")+".")
+          PY
+          tag="$(az acr repository show-tags --name "$ACR" --repository web-coderats-base \
+            --subscription "$SID" --query "[?@=='mirror-dnsfix-db35f8c2f5fb'] | [0]" \
+            --only-show-errors -o tsv 2>/dev/null || true)"
+          [[ "$tag" == "mirror-dnsfix-db35f8c2f5fb" ]] || {
+            echo "::error::Previously built DNS-fix image tag not visible in target ACR."
+            exit 1
+          }
+          echo "New DNS image confirmed in isolated registry, no rebuild needed."
+
+      - name: Update Web image separately and classify Azure CLI errors
+        shell: bash
+        run: |
+          set -euo pipefail
+          old="$(az containerapp show --subscription "$SID" -g "$RG" -n "$WEB" \
+            --query 'properties.template.containers[0].image' -o tsv --only-show-errors)"
+          if [[ "$old" == "$NEW" ]]; then
+            echo "Image already activated, no second revision needed."
+            exit 0
+          fi
+          [[ "$old" == "$OLD" ]]
+          logfile="$RUNNER_TEMP/web-image-update-private.log"
+          if az containerapp update --subscription "$SID" -g "$RG" -n "$WEB" \
+            --image "$NEW" --only-show-errors -o none > "$logfile" 2>&1; then
+            echo "Image-only Web update succeeded."
+          else
+            LOGFILE="$logfile" python3 - <<'PY'
+          import os,re,json
+          s=open(os.environ["LOGFILE"],errors="replace").read()
+          candidates=re.findall(r'"code"\s*:\s*"([A-Za-z][A-Za-z0-9_]{1,60})"',s)
+          candidates+=re.findall(r'\(([A-Za-z][A-Za-z0-9_]{1,60})\)',s)
+          allow={"UnexpectedException","BadRequest","Conflict","RequestDisallowedByAzure","ResourceQuotaExceeded",
+                 "OperationNotAllowed","AuthorizationFailed","InvalidParameterValue","ContainerAppOperationError"}
+          code=next((c for c in candidates if c in allow),"unclassified")
+          terms={"registry-auth":r"unauthorized|denied|invalid credential|authentication",
+                 "image-pull":r"image pull|imagepull|manifest unknown|not found",
+                 "identity":r"managed identity|userassignedidentity|user assigned identity",
+                 "revision":r"revision|provisioning",
+                 "conflict":r"conflict|already exists"}
+          hits=[k for k,v in terms.items() if re.search(v,s,re.I)]
+          print("::error::Web image-only ARM update failed; code="+code+"; categories="+(",".join(hits) or "none")+". Raw Azure output withheld.")
+          PY
+            exit 1
+          fi
+
+      - name: Update only Web API proxy environment separately
+        shell: bash
+        run: |
+          set -euo pipefail
+          logfile="$RUNNER_TEMP/web-env-update-private.log"
+          if az containerapp update --subscription "$SID" -g "$RG" -n "$WEB" \
+            --set-env-vars "API_PROXY_TARGET=http://$TARGET_API_FQDN" \
+            --only-show-errors -o none > "$logfile" 2>&1; then
+            echo "Web runtime API proxy target changed to exact private FQDN."
+          else
+            echo "::error::Web proxy runtime environment update failed (independent of image); raw CLI output withheld."
+            exit 1
+          fi
+
+      - name: Verify actual target image revision health and public API proxy
+        shell: bash
+        run: |
+          set -euo pipefail
+          current="$(az containerapp show --subscription "$SID" -g "$RG" -n "$WEB" \
+            --query 'properties.template.containers[0].image' -o tsv --only-show-errors)"
+          [[ "$current" == "$NEW" ]] || { echo "::error::Wrong final Web image."; exit 1; }
+          ready="false"
+          web_origin="$(az containerapp show --subscription "$SID" -g "$RG" -n "$WEB" \
+            --query properties.configuration.ingress.fqdn -o tsv --only-show-errors)"
+          [[ "$web_origin" == "$WEB".*.brazilsouth.azurecontainerapps.io ]]
+          for i in $(seq 1 18); do
+            az containerapp revision list --subscription "$SID" -g "$RG" -n "$WEB" \
+              --only-show-errors -o json > "$RUNNER_TEMP/web-revision-health.json"
+            if python3 - <<'PY'
+          import json,os,sys
+          a=json.load(open(os.path.join(os.environ["RUNNER_TEMP"],"web-revision-health.json")))
+          ok=isinstance(a,list) and any(
+            (r.get("properties") or {}).get("active") is True
+            and (r.get("properties") or {}).get("healthState")=="Healthy"
+            and (r.get("properties") or {}).get("runningState")=="Running" for r in a)
+          sys.exit(0 if ok else 1)
+          PY
+            then ready="true"; break; fi
+            sleep 10
+          done
+          health="000"; proxy="000"
+          for i in $(seq 1 18); do
+            health="$(curl -sS -L -o /dev/null --connect-timeout 7 --max-time 18 -w '%{http_code}' \
+              "https://$web_origin/health" 2>/dev/null || true)"
+            proxy="$(curl -sS -L -o /dev/null --connect-timeout 7 --max-time 18 -w '%{http_code}' \
+              "https://$web_origin/api/v1/auth/me" 2>/dev/null || true)"
+            [[ "$health" == "200" && "$proxy" == "401" ]] && break
+            sleep 10
+          done
+          {
+            echo '### CodeRats mirror Web DNS fix activation'
+            echo "- New target Web image: $NEW"
+            echo "- Web endpoint: https://$web_origin"
+            echo "- Active revision Healthy/Running: $ready"
+            echo "- /health HTTP: $health"
+            echo "- /api/v1/auth/me HTTP: $proxy (expected 401)"
+            echo '- Original DEV, DNS, GET, databases and user data untouched'
+          } >> "$GITHUB_STEP_SUMMARY"
+          [[ "$ready" == "true" && "$health" == "200" && "$proxy" == "401" ]] || {
+            echo "::error::Web health/proxy gate failed; see only status codes in workflow summary."
+            exit 1
+          }
+          echo "CodeRats target Web proxy reached API authentication endpoint correctly."
+
+      - name: Cleanup private metadata, CLI errors and Azure session
+        if: always()
+        shell: bash
+        run: |
+          rm -f "$RUNNER_TEMP/target-web-private.json" "$RUNNER_TEMP/target-api-private.json" \
+            "$RUNNER_TEMP/web-image-update-private.log" "$RUNNER_TEMP/web-env-update-private.log" \
+            "$RUNNER_TEMP/web-revision-health.json"
+          az logout -o none >/dev/null 2>&1 || true

@@ -265,11 +265,26 @@ jobs:
                   p=a.get('properties') or {}
                   msg=str(p.get('statusMessage',''))[:8000] if isinstance(p,dict) else ''
                   code=next((c for c in codes if re.search(r'(?<![A-Za-z])'+c+r'(?![A-Za-z])',msg,re.I)), 'Unclassified')
+                  try:
+                      detail=json.loads(msg)
+                  except (ValueError,TypeError,RecursionError):
+                      detail={}
+                  if isinstance(detail,dict):
+                      for item in (detail.get('error'),detail.get('properties'),detail):
+                          if isinstance(item,dict):
+                              candidate=item.get('code')
+                              if isinstance(candidate,str) and re.fullmatch(r'[A-Za-z][A-Za-z0-9_]{1,48}',candidate):
+                                  code=candidate
+                                  break
+                  if code=='Unclassified':
+                      result=re.search(r'"code"\s*:\s*"([A-Za-z][A-Za-z0-9_]{1,48})"',msg)
+                      if result:code=result.group(1)
                   failed.append(code)
           with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:
               f.write('- Azure ARM storage write events observed (last 3h): '+str(len(matched))+'\n')
               f.write('- ARM statuses: '+(', '.join(k+':'+str(v) for k,v in sorted(groups.items())) if groups else 'none')+'\n')
               f.write('- ARM failure classes: '+(', '.join(sorted(set(failed))) if failed else 'none observed')+'\n')
+              f.write('- ARM failed event count: '+str(len(failed))+'\n')
               f.write('- No raw activity-log messages, credentials or storage paths published\n')
           PY
           else

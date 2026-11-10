@@ -86,10 +86,39 @@ jobs:
             echo "- ARM list resource groups: **failed**" >> "$GITHUB_STEP_SUMMARY"
           fi
           echo "- All operations: read-only" >> "$GITHUB_STEP_SUMMARY"
+          # Inspect effective Azure for Students region policies. Report only region names.
+          if az policy assignment list --scope "/subscriptions/$SID" \
+              --subscription "$SID" --disable-scope-strict-match true \
+              --only-show-errors -o json > /tmp/allowed-policies.json 2>/dev/null; then
+            python3 - <<'PY'
+          import json, os, re
+          a=json.load(open('/tmp/allowed-policies.json'))
+          if isinstance(a,dict): a=a.get('value',[])
+          names=[]
+          regions=set()
+          for x in a:
+              p=x.get('properties',x)
+              title=str(p.get('displayName',''))
+              params=p.get('parameters') or {}
+              if 'region' in title.lower() or 'location' in title.lower():
+                  names.append(title)
+              for key,item in params.items():
+                  if 'region' not in key.lower() and 'location' not in key.lower(): continue
+                  v=item.get('value',item) if isinstance(item,dict) else item
+                  if isinstance(v,list):
+                      regions.update(z for z in v if isinstance(z,str) and re.fullmatch('[a-z0-9]{3,30}',z))
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:
+              f.write("- Applicable policy assignments found: "+str(len(a))+"\n")
+              f.write("- Named region policies: "+str(len(names))+"\n")
+              f.write("- Allowed regions from policy parameters: "+(', '.join(sorted(regions)) if regions else 'not exposed')+"\n")
+          PY
+          else
+            echo "- Region policy assignments could not be listed." >> "$GITHUB_STEP_SUMMARY"
+          fi
           cat "$GITHUB_STEP_SUMMARY"
 
       - name: Logout and delete temporary metadata
         if: always()
         run: |
-          rm -f /tmp/sub-check.json /tmp/permissions.json
+          rm -f /tmp/sub-check.json /tmp/permissions.json /tmp/allowed-policies.json
           az logout --output none >/dev/null 2>&1 || true

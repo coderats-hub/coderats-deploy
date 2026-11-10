@@ -1,0 +1,121 @@
+name: Provision isolated CodeRats Standard Container Apps Environment (target only)
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "Type CREATE_TARGET_STANDARD_CAE for isolated destination environment"
+        required: true
+        type: string
+  push:
+    branches: [main]
+    paths: [".github/workflows/provision-migration-target-standard-cae.yml"]
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: coderats-migration-target-standard-cae
+  cancel-in-progress: false
+
+jobs:
+  provision:
+    if: >-
+      github.repository == 'coderats-hub/coderats-deploy' &&
+      github.ref == 'refs/heads/main' &&
+      ((github.event_name == 'workflow_dispatch' && inputs.confirmation == 'CREATE_TARGET_STANDARD_CAE') ||
+       (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'ci(migration): create isolated standard cae once')))
+    runs-on: ubuntu-latest
+    environment: migration-target
+    timeout-minutes: 45
+    env:
+      SID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      TID: ${{ secrets.AZURE_TENANT_ID }}
+      RG: rg-coderats-migration-c26m0911
+      OLD_CAE: cae-coderatsmig-c26m0911
+      NEW_CAE: cae-coderatsmig-standard-c26m0911
+      REGION: brazilsouth
+    steps:
+      - name: Sign in only to destination subscription
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Confirm new subscription and immutable scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SID" == 'da3650a9-e291-43f1-ae4b-9dcc8ff84239' ]]
+          [[ "$TID" == '1cf74c7e-fcd9-46f7-8a9d-e699d3529003' ]]
+          [[ "$(az account show --query id -o tsv)" == "$SID" ]]
+          [[ "$(az account show --query tenantId -o tsv)" == "$TID" ]]
+          [[ "$(az group show --subscription "$SID" -n "$RG" --query name -o tsv --only-show-errors)" == "$RG" ]]
+          az containerapp env show --subscription "$SID" -g "$RG" -n "$OLD_CAE" --only-show-errors -o json > "$RUNNER_TEMP/old-env-private.json"
+          python3 - <<'PY'
+          import json,os,sys
+          d=json.load(open(os.path.join(os.environ['RUNNER_TEMP'],'old-env-private.json')))
+          if d.get('name')!=os.environ['OLD_CAE']:
+              sys.exit('::error::Existing mirror environment not found; refusing new provisioning.')
+          mode=(d.get('properties') or {}).get('environmentMode','')
+          if str(mode).lower()!='express':
+              sys.exit('::error::Existing mirror mode differs from confirmed Express diagnosis.')
+          print('Original mirror Express environment confirmed; existing apps will not be modified.')
+          PY
+
+      - name: Provision separate WorkloadProfiles Consumption environment only
+        shell: bash
+        run: |
+          set -euo pipefail
+          existing=false
+          if az containerapp env show --subscription "$SID" -g "$RG" -n "$NEW_CAE" \
+            --only-show-errors -o json > "$RUNNER_TEMP/new-env-private.json" 2>/dev/null; then
+            existing=true
+          fi
+          if [[ "$existing" == false ]]; then
+            if ! az containerapp env create --subscription "$SID" -g "$RG" -n "$NEW_CAE" \
+              --location "$REGION" --environment-mode WorkloadProfiles \
+              --logs-destination none --only-show-errors -o none \
+              > "$RUNNER_TEMP/create-standard-private.log" 2>&1; then
+              echo '::error::Creating isolated Standard CAE failed (Azure details kept private).'
+              exit 1
+            fi
+            echo 'Isolated Standard CAE creation requested; original mirror retained.'
+          fi
+          az containerapp env show --subscription "$SID" -g "$RG" -n "$NEW_CAE" \
+            --only-show-errors -o json > "$RUNNER_TEMP/new-env-private.json"
+          python3 - <<'PY'
+          import json,os,sys
+          d=json.load(open(os.path.join(os.environ['RUNNER_TEMP'],'new-env-private.json')))
+          p=d.get('properties') or {}
+          name=d.get('name')
+          mode=str(p.get('environmentMode',''))
+          state=str(p.get('provisioningState',''))
+          domain=str(p.get('defaultDomain',''))
+          if (name!=os.environ['NEW_CAE'] or mode.lower()!='workloadprofiles' or
+              state!='Succeeded' or not domain.endswith('.brazilsouth.azurecontainerapps.io')):
+              sys.exit('::error::New environment is not verified as Ready Standard in Brazil South.')
+          profiles=p.get('workloadProfiles') or []
+          consumption=any(isinstance(x,dict) and (x.get('workloadProfileType')=='Consumption' or x.get('name')=='Consumption') for x in profiles)
+          if not consumption:
+              sys.exit('::error::Standard environment lacks built-in Consumption profile.')
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:
+              f.write('### Isolated target Standard CAE (no applications deployed)\n')
+              f.write('- Destination subscription/tenant/region: verified\n')
+              f.write('- New environment mode: WorkloadProfiles; state: Succeeded\n')
+              f.write('- Built-in Consumption profile: verified\n')
+              f.write('- Old Express mirror, all apps, PostgreSQL and Azure Files: unchanged\n')
+              f.write('- Source DEV, DNS, secrets and database rows: unchanged\n')
+              f.write('- Next: deploy new isolated API/Grader/Web apps with scoped storage and GET job\n')
+          print('Target Standard environment successfully validated (no IDs or secrets exposed).')
+          PY
+
+      - name: Cleanup temporary metadata and Azure credentials
+        if: always()
+        shell: bash
+        run: |
+          rm -f "$RUNNER_TEMP/old-env-private.json" "$RUNNER_TEMP/new-env-private.json" \
+            "$RUNNER_TEMP/create-standard-private.log"
+          az logout -o none >/dev/null 2>&1 || true

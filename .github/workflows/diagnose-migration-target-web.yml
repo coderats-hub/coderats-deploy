@@ -586,6 +586,107 @@ jobs:
           cat "$GITHUB_STEP_SUMMARY"
           rm -f "$RUNNER_TEMP/mirror-web-proxy-runtime-private.json"
 
+      - name: Inspect Web provisioning error and probe private API DNS from inside Web (read-only)
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SID" == "da3650a9-e291-43f1-ae4b-9dcc8ff84239" ]]
+          [[ "$(az account show --query id -o tsv)" == "$SID" ]]
+          errfile="$RUNNER_TEMP/migration-web-provisioning-private.json"
+          az containerapp show --subscription "$SID" -g "$RG" -n "$WEB" \
+            --query '{state:properties.provisioningState, error:properties.provisioningError}' \
+            --only-show-errors -o json > "$errfile"
+          python3 - <<'PY'
+          import json,os,re
+          d=json.load(open(os.path.join(os.environ["RUNNER_TEMP"],"migration-web-provisioning-private.json")))
+          raw=d.get("error")
+          codes=[]
+          def walk(v):
+              if isinstance(v,dict):
+                  for k,x in v.items():
+                      if k.lower()=="code" and isinstance(x,str) and re.fullmatch(r"[A-Za-z][A-Za-z0-9_.-]{0,62}",x):
+                          codes.append(x)
+                      if isinstance(x,(dict,list)): walk(x)
+              elif isinstance(v,list):
+                  for x in v: walk(x)
+          walk(raw)
+          if isinstance(raw,str):
+              for x in re.findall(r'"code"\s*:\s*"([A-Za-z][A-Za-z0-9_.-]{1,62})"',raw): codes.append(x)
+          cat={"managed-identity":r"managed.identity|user.assigned|identity",
+               "registry-auth":r"registry|acr|image.pull|unauthorized|denied",
+               "quota":r"quota|limit exceeded|capacity",
+               "invalid-config":r"invalid|validation|badrequest"}
+          msg=str(raw).lower()
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as h:
+              h.write("### Web ARM provisioning (sanitized)\n")
+              h.write("- State: "+str(d.get("state") if d.get("state") in ("Succeeded","Failed","InProgress") else "other")+"\n")
+              h.write("- Error code: "+(",".join(dict.fromkeys(codes[:5])) or "none exposed")+"\n")
+              h.write("- Error category: "+(",".join(k for k,v in cat.items() if re.search(v,msg)) or "unclassified")+"\n")
+              h.write("- Raw ARM error withheld\n")
+          PY
+          code="$(cat <<'NODE'
+          const dns=require('node:dns').promises;
+          const http=require('node:http');
+          const https=require('node:https');
+          const app='ca-coderatsmig-api-c26m0911';
+          const suffix='greenground-5275c6f5.brazilsouth.azurecontainerapps.io';
+          const targets=[
+            ['short',app,'http:'],
+            ['provider',app+'.'+suffix,'http:'],
+            ['private',app+'.internal.'+suffix,'http:'],
+            ['private-tls',app+'.internal.'+suffix,'https:']
+          ];
+          const allowedErrors=new Set(['ENOTFOUND','EAI_AGAIN','ECONNREFUSED','ECONNRESET','ETIMEDOUT','EHOSTUNREACH']);
+          function call(host,protocol){
+            return new Promise(resolve=>{
+              const module=protocol==='https:'?https:http;
+              const request=module.get({hostname:host,port:protocol==='https:'?443:80,
+                path:'/api/v1/auth/me',method:'GET',timeout:5000,
+                headers:{'user-agent':'CodeRats-Mirror-ReadOnly-Probe'}},res=>{
+                const status=res.statusCode;
+                res.resume();
+                resolve(Number.isInteger(status)?'HTTP_'+status:'UNKNOWN');
+              });
+              request.on('timeout',()=>request.destroy(Object.assign(new Error('timeout'),{code:'ETIMEDOUT'})));
+              request.on('error',e=>resolve(allowedErrors.has(e.code)?e.code:'NETWORK_ERROR'));
+            });
+          }
+          (async()=>{
+            for(const [label,hostname,protocol] of targets){
+              let d='OK';
+              try{await dns.lookup(hostname)}catch(e){d=allowedErrors.has(e.code)?e.code:'DNS_ERROR'}
+              const r=d==='OK'?await call(hostname,protocol):'SKIP';
+              console.log('CR_PROBE|'+label+'|'+d+'|'+r);
+            }
+          })().catch(()=>console.log('CR_PROBE|fatal|ERROR|ERROR'));
+          NODE
+          )"
+          encoded="$(printf '%s' "$code" | base64 -w0)"
+          probe="$RUNNER_TEMP/migration-dns-probe-private.log"
+          # script supplies a pseudo-terminal for the Azure interactive exec CLI.
+          # The remote process makes only anonymous GET requests; it cannot print
+          # cookies, app environment variables, response bodies or database rows.
+          timeout 85s script -q -e -c \
+            "az containerapp exec --subscription '$SID' -g '$RG' -n '$WEB' --command 'sh -c \"printf %s $encoded | base64 -d | node\"'" \
+            /dev/null > "$probe" 2>&1 || true
+          PROBE_LOG="$probe" python3 - <<'PY'
+          import os,re
+          s=open(os.environ["PROBE_LOG"],errors="replace").read()
+          valid={"short","provider","private","private-tls"}
+          found={}
+          for name,dns,status in re.findall(r"CR_PROBE\|(short|provider|private|private-tls)\|(OK|ENOTFOUND|EAI_AGAIN|DNS_ERROR|EHOSTUNREACH|ERROR)\|(HTTP_[0-9]{3}|NETWORK_ERROR|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EHOSTUNREACH|SKIP|UNKNOWN|ERROR)",s):
+              if name in valid: found[name]=(dns,status)
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:
+              f.write("### DNS and HTTP from target Web replica (read-only)\n")
+              if not found: f.write("- In-container probe unavailable; no DNS inference can be made\n")
+              for label in ("short","provider","private","private-tls"):
+                  a,b=found.get(label,("NO_RESULT","NO_RESULT"))
+                  f.write("- "+label+": DNS="+a+", anonymous API GET="+b+"\n")
+              f.write("- Only response status and normalized transport error classes were captured\n")
+          PY
+          cat "$GITHUB_STEP_SUMMARY"
+          rm -f "$errfile" "$probe"
+
       - name: Print safe summary
         if: always()
         shell: bash

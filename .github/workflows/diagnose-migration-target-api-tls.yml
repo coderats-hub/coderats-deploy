@@ -1,0 +1,107 @@
+name: Diagnose migration-target private API TLS certificate failure (read-only)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [".github/workflows/diagnose-migration-target-api-tls.yml"]
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: coderats-migration-private-api-tls-diagnostic
+  cancel-in-progress: false
+
+jobs:
+  inspect:
+    if: >-
+      github.repository == 'coderats-hub/coderats-deploy' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' ||
+       startsWith(github.event.head_commit.message, 'ci(migration): diagnose private api tls cert'))
+    runs-on: ubuntu-latest
+    environment: migration-target
+    timeout-minutes: 12
+    env:
+      SID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      TID: ${{ secrets.AZURE_TENANT_ID }}
+      RG: rg-coderats-migration-c26m0911
+      WEB: ca-coderatsmig-web-c26m0911
+      API: ca-coderatsmig-api-c26m0911
+      CAE: cae-coderatsmig-c26m0911
+    steps:
+      - name: Log in to exact new subscription only
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Inspect certificate error codes from private Web console and API ingress
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SID" == "da3650a9-e291-43f1-ae4b-9dcc8ff84239" ]]
+          [[ "$TID" == "1cf74c7e-fcd9-46f7-8a9d-e699d3529003" ]]
+          [[ "$(az account show --query id -o tsv)" == "$SID" ]]
+          [[ "$(az account show --query tenantId -o tsv)" == "$TID" ]]
+          default_domain="$(az containerapp env show --subscription "$SID" -g "$RG" -n "$CAE" \
+            --query properties.defaultDomain -o tsv --only-show-errors)"
+          [[ "$default_domain" == *.brazilsouth.azurecontainerapps.io ]]
+          ingress_external="$(az containerapp show --subscription "$SID" -g "$RG" -n "$API" \
+            --query properties.configuration.ingress.external -o tsv --only-show-errors)"
+          [[ "$ingress_external" == "False" || "$ingress_external" == "false" ]]
+          fqdn="$API.internal.$default_domain"
+          echo "### Isolated Web-to-API HTTPS TLS diagnosis" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Target API ingress internal: confirmed" >> "$GITHUB_STEP_SUMMARY"
+          log="$RUNNER_TEMP/private-web-tls-console.log"
+          if az containerapp logs show --subscription "$SID" -g "$RG" -n "$WEB" \
+              --type console --tail 200 --only-show-errors > "$log" 2>&1; then
+            LOGFILE="$log" python3 - <<'PY'
+          import os,re
+          data=open(os.environ["LOGFILE"],errors="replace").read().lower()
+          classes={
+            "certificate-hostname-mismatch":r"err_tls_cert_altname_invalid|hostname/ip does not match certificate|certificate.*not.*valid.*hostname",
+            "certificate-untrusted-issuer":r"unable_to_verify_leaf_signature|unable_to_get_issuer_cert|unable_to_get_issuer_cert_locally|unable to get local issuer certificate|certificate verify failed",
+            "self-signed-certificate":r"self_signed_cert_in_chain|depth_zero_self_signed_cert|self.signed.certificate",
+            "certificate-expired":r"cert_has_expired|certificate has expired",
+            "tls-handshake":r"eproto|tlsv1 alert|ssl routines|wrong version number|handshake failure",
+            "network-dns":r"enotfound|eai_again",
+            "network-connect":r"econnrefused|econnreset|etimedout|fetch failed|proxy error",
+          }
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:
+              f.write("- Recent Web console log query: available\n")
+              for key,pattern in classes.items():
+                  f.write("- "+key+"="+str(min(999,len(re.findall(pattern,data))))+"\n")
+              f.write("- Raw console log, certificate data and host URLs withheld\n")
+          PY
+          else
+            echo "- Web console log query unavailable" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          # Verify the TLS trust/hostname result from an external runner, not
+          # application content. Private ingress HTTP routing remains blocked to
+          # outside callers. All certificate metadata is withheld.
+          check="$RUNNER_TEMP/api-tls-check-private.log"
+          if timeout 16s openssl s_client -connect "$fqdn:443" -servername "$fqdn" \
+              -verify_hostname "$fqdn" -verify_return_error -brief </dev/null > "$check" 2>&1; then
+            echo "- External TLS hostname+chain verification: PASS" >> "$GITHUB_STEP_SUMMARY"
+          else
+            if grep -Eq 'hostname mismatch|Verify return code: 62|certificate verify failed:hostname' "$check"; then
+              echo "- External TLS hostname+chain verification: HOSTNAME_MISMATCH" >> "$GITHUB_STEP_SUMMARY"
+            elif grep -Eiq 'unable to verify|unable to get local issuer|self.signed|verify error' "$check"; then
+              echo "- External TLS hostname+chain verification: UNTRUSTED_ISSUER" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "- External TLS hostname+chain verification: UNAVAILABLE_FROM_RUNNER" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          fi
+          cat "$GITHUB_STEP_SUMMARY"
+          rm -f "$log" "$check"
+
+      - name: Remove private records and Azure session
+        if: always()
+        shell: bash
+        run: |
+          rm -f "$RUNNER_TEMP/private-web-tls-console.log" "$RUNNER_TEMP/api-tls-check-private.log"
+          az logout --output none >/dev/null 2>&1 || true

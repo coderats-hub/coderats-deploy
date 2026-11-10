@@ -99,10 +99,26 @@ jobs:
             --query properties.configuration.ingress.fqdn -o tsv --only-show-errors)"
           web_fqdn="$(az containerapp show -g "$RG" -n "$WEB" --subscription "$SID" \
             --query properties.configuration.ingress.fqdn -o tsv --only-show-errors)"
-          [[ "$api_fqdn" == "$API.internal.$domain" ]] || {
-            echo "::error::API internal FQDN did not match expected destination-only topology."
+          api_external="$(az containerapp show -g "$RG" -n "$API" --subscription "$SID" \
+            --query properties.configuration.ingress.external -o tsv --only-show-errors)"
+          [[ "$api_external" == "False" || "$api_external" == "false" ]] || {
+            echo "::error::API ingress is not private in the target environment; refusing to rebuild."
             exit 1
           }
+          # Azure Container Apps provider versions may expose the FQDN as
+          # app.domain, app.internal.domain or leave it unfilled for internal ingress.
+          # All accepted names stay under the confirmed destination CAE domain.
+          if [[ "$api_fqdn" == "$API.internal.$domain" ]]; then
+            echo "API FQDN format: private internal hostname."
+          elif [[ "$api_fqdn" == "$API.$domain" ]]; then
+            echo "API FQDN format: standard ACA hostname with private ingress."
+          elif [[ -z "$api_fqdn" || "$api_fqdn" == "None" ]]; then
+            api_fqdn="$API.internal.$domain"
+            echo "API provider omitted FQDN; using documented private internal hostname in same CAE."
+          else
+            echo "::error::API FQDN is outside exact expected target domain; no changes performed."
+            exit 1
+          fi
           [[ "$web_fqdn" == "$WEB.$domain" ]] || {
             echo "::error::Mirror Web hostname did not match expected destination-only origin."
             exit 1

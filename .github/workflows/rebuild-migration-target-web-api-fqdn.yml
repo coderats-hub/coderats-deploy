@@ -1,0 +1,248 @@
+name: Rebuild migration-target Web with validated internal API FQDN (target-only)
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "Type FIX_MIGRATION_WEB_API_DNS to rebuild target Web only"
+        type: string
+        required: true
+  push:
+    branches: [main]
+    paths: [".github/workflows/rebuild-migration-target-web-api-fqdn.yml"]
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: coderats-migration-web-fqdn-build
+  cancel-in-progress: false
+
+jobs:
+  rebuild-web:
+    if: >-
+      github.repository == 'coderats-hub/coderats-deploy' &&
+      github.ref == 'refs/heads/main' &&
+      ((github.event_name == 'workflow_dispatch' && inputs.confirmation == 'FIX_MIGRATION_WEB_API_DNS') ||
+       (github.event_name == 'push' &&
+        startsWith(github.event.head_commit.message, 'ci(migration): fix isolated web api dns')))
+    runs-on: ubuntu-latest
+    environment: migration-target
+    timeout-minutes: 75
+    env:
+      SID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      TID: ${{ secrets.AZURE_TENANT_ID }}
+      RG: rg-coderats-migration-c26m0911
+      CAE: cae-coderatsmig-c26m0911
+      ACR: crcoderatsmigc26m0911
+      API: ca-coderatsmig-api-c26m0911
+      WEB: ca-coderatsmig-web-c26m0911
+      IMG: crcoderatsmigc26m0911.azurecr.io/web-coderats-base:mirror-dnsfix-db35f8c2f5fb
+    steps:
+      - name: Check target-only GitHub App access
+        shell: bash
+        env:
+          APP_ID: ${{ vars.CODERATS_DEPLOY_APP_ID }}
+          APP_KEY: ${{ secrets.CODERATS_DEPLOY_APP_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          [[ "$SID" == "da3650a9-e291-43f1-ae4b-9dcc8ff84239" ]]
+          [[ "$TID" == "1cf74c7e-fcd9-46f7-8a9d-e699d3529003" ]]
+          [[ -n "$APP_ID" && -n "$APP_KEY" ]]
+          echo "Target and private source checkout settings valid."
+
+      - name: Create GitHub App read-only checkout token scoped to Web only
+        id: token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.CODERATS_DEPLOY_APP_ID }}
+          private-key: ${{ secrets.CODERATS_DEPLOY_APP_PRIVATE_KEY }}
+          owner: coderats-hub
+          repositories: web-coderats-base
+          permission-contents: read
+
+      - name: Checkout exact reviewed Web source commit
+        uses: actions/checkout@v4
+        with:
+          repository: coderats-hub/web-coderats-base
+          ref: db35f8c2f5fb104a47afaeaa60dad9e6e709d193
+          path: web-src
+          token: ${{ steps.token.outputs.token }}
+          persist-credentials: false
+
+      - name: Verify exact pinned Web commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$(git -C web-src rev-parse HEAD)" == "db35f8c2f5fb104a47afaeaa60dad9e6e709d193" ]]
+          test -f web-src/Dockerfile
+          echo "Exact pinned Web code available. No other private repositories accessed."
+
+      - name: Sign in to isolated destination subscription
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Verify destination resources and exact internal API FQDN
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$(az account show --query id -o tsv)" == "$SID" ]]
+          [[ "$(az account show --query tenantId -o tsv)" == "$TID" ]]
+          domain="$(az containerapp env show -g "$RG" -n "$CAE" --subscription "$SID" \
+            --query properties.defaultDomain -o tsv --only-show-errors)"
+          [[ "$domain" == *.azurecontainerapps.io ]]
+          api_fqdn="$(az containerapp show -g "$RG" -n "$API" --subscription "$SID" \
+            --query properties.configuration.ingress.fqdn -o tsv --only-show-errors)"
+          web_fqdn="$(az containerapp show -g "$RG" -n "$WEB" --subscription "$SID" \
+            --query properties.configuration.ingress.fqdn -o tsv --only-show-errors)"
+          [[ "$api_fqdn" == "$API.internal.$domain" ]] || {
+            echo "::error::API internal FQDN did not match expected destination-only topology."
+            exit 1
+          }
+          [[ "$web_fqdn" == "$WEB.$domain" ]] || {
+            echo "::error::Mirror Web hostname did not match expected destination-only origin."
+            exit 1
+          }
+          [[ "$(az containerapp show -g "$RG" -n "$API" --subscription "$SID" \
+            --query properties.runningStatus -o tsv --only-show-errors)" == "Running" ]]
+          [[ "$(az containerapp show -g "$RG" -n "$WEB" --subscription "$SID" \
+            --query properties.runningStatus -o tsv --only-show-errors)" == "Running" ]]
+          [[ "$(az acr show -g "$RG" -n "$ACR" --subscription "$SID" --query name -o tsv --only-show-errors)" == "$ACR" ]]
+          echo "API_INTERNAL_FQDN=$api_fqdn" >> "$GITHUB_ENV"
+          echo "WEB_PUBLIC_ORIGIN=https://$web_fqdn" >> "$GITHUB_ENV"
+          echo "Exact existing API internal FQDN verified without contacting the original DEV infrastructure."
+
+      - name: Create isolated ACR push credential on destination only
+        shell: bash
+        run: |
+          set -euo pipefail
+          token="coderats-mirror-build-push"
+          if ! az acr token show --registry "$ACR" --name "$token" --subscription "$SID" \
+              --query name -o tsv --only-show-errors >/dev/null 2>&1; then
+            az acr token create --registry "$ACR" --name "$token" --scope-map _repositories_push \
+              --subscription "$SID" --only-show-errors -o none
+          fi
+          az acr token update --registry "$ACR" --name "$token" --status enabled \
+            --subscription "$SID" --only-show-errors -o none
+          pass="$(az acr token credential generate --registry "$ACR" --name "$token" \
+            --password1 --expiration-in-days 1 --subscription "$SID" \
+            --query 'passwords[0].value' -o tsv --only-show-errors)"
+          [[ -n "$pass" ]]
+          echo "::add-mask::$pass"
+          printf '%s' "$pass" | docker login "$ACR.azurecr.io" --username "$token" \
+            --password-stdin > "$RUNNER_TEMP/acr-build-login-private.log" 2>&1 || {
+              echo "::error::Destination ACR token login failed; no raw logs printed."
+              exit 1
+            }
+          unset pass
+          echo "Temporary destination-only push credential activated."
+
+      - name: Rebuild Web with runtime and baked Next.js rewrites pointing to exact API FQDN
+        shell: bash
+        run: |
+          set -euo pipefail
+          log="$RUNNER_TEMP/web-dns-build-private.log"
+          # Next.js rewrites are compiled at build time, so a runtime env
+          # change alone cannot fix the existing short-name DNS failure.
+          if ! docker build -f web-src/Dockerfile \
+              --build-arg "NEXT_PUBLIC_API_URL=$WEB_PUBLIC_ORIGIN" \
+              --build-arg "API_PROXY_TARGET=http://$API_INTERNAL_FQDN" \
+              -t "$IMG" web-src > "$log" 2>&1; then
+            echo "::error::Pinned Web build failed; private build log withheld."
+            exit 1
+          fi
+          if ! docker push "$IMG" >> "$log" 2>&1; then
+            echo "::error::Pinned Web push to target ACR failed; private build log withheld."
+            exit 1
+          fi
+          echo "New Web image with exact internal API FQDN built and pushed to target ACR."
+
+      - name: Update Web image and runtime proxy target only
+        shell: bash
+        run: |
+          set -euo pipefail
+          current="$(az containerapp show -g "$RG" -n "$WEB" --subscription "$SID" \
+            --query properties.template.containers[0].image -o tsv --only-show-errors)"
+          [[ "$current" == "$ACR.azurecr.io/web-coderats-base:mirror-db35f8c2f5fb" || "$current" == "$IMG" ]] || {
+            echo "::error::Unexpected Web image currently deployed; refusing to overwrite."
+            exit 1
+          }
+          if [[ "$current" != "$IMG" ]]; then
+            if ! az containerapp update --subscription "$SID" -g "$RG" -n "$WEB" \
+              --image "$IMG" --set-env-vars "API_PROXY_TARGET=http://$API_INTERNAL_FQDN" \
+              --only-show-errors -o none > "$RUNNER_TEMP/web-runtime-update-private.log" 2>&1; then
+              echo "::error::Target-only Web image update failed; private Azure diagnostic withheld."
+              exit 1
+            fi
+          fi
+          echo "New pinned Web image activated, API and Grader Container Apps unchanged."
+
+      - name: Check exact active revision health and Web to API proxy HTTP
+        shell: bash
+        run: |
+          set -euo pipefail
+          ok="false"
+          for i in $(seq 1 18); do
+            az containerapp revision list --subscription "$SID" -g "$RG" -n "$WEB" \
+              --only-show-errors -o json > "$RUNNER_TEMP/target-web-revisions.json"
+            if python3 - <<'PY'
+          import json,os,sys
+          a=json.load(open(os.path.join(os.environ["RUNNER_TEMP"],"target-web-revisions.json")))
+          ok=isinstance(a,list) and any(
+              r.get("properties",{}).get("active") is True and
+              r.get("properties",{}).get("runningState")=="Running" and
+              r.get("properties",{}).get("healthState")=="Healthy" for r in a)
+          sys.exit(0 if ok else 1)
+          PY
+            then ok="true"; break; fi
+            sleep 10
+          done
+          [[ "$ok" == "true" ]] || {
+            echo "::error::Target Web has no active Healthy/Running revision after internal API FQDN image update."
+            exit 1
+          }
+          health="000"
+          proxy="000"
+          for i in $(seq 1 18); do
+            health="$(curl -L -sS -o /dev/null --connect-timeout 5 --max-time 18 -w '%{http_code}' \
+              "$WEB_PUBLIC_ORIGIN/health" 2>/dev/null || true)"
+            proxy="$(curl -L -sS -o /dev/null --connect-timeout 5 --max-time 18 -w '%{http_code}' \
+              "$WEB_PUBLIC_ORIGIN/api/v1/auth/me" 2>/dev/null || true)"
+            [[ "$health" == "200" && "$proxy" == "401" ]] && break
+            sleep 10
+          done
+          {
+            echo "### CodeRats migration Web internal DNS fix"
+            echo "- Destination: migration-target only, origin production and DNS unchanged"
+            echo "- Source: pinned Web commit db35f8c2f5fb"
+            echo "- New Web image: $IMG"
+            echo "- Web endpoint: $WEB_PUBLIC_ORIGIN"
+            echo "- Active Web revision Healthy/Running: $ok"
+            echo "- Web /health: HTTP $health (200 expected)"
+            echo "- Proxied /api/v1/auth/me: HTTP $proxy (401 expected without session)"
+            echo "- User data and OAuth credentials not imported"
+            echo "- Web managed identity attachment remains deferred; ACR pull uses dedicated temporary scoped credentials"
+          } >> "$GITHUB_STEP_SUMMARY"
+          [[ "$health" == "200" && "$proxy" == "401" ]] || {
+            echo "::error::Web or API proxy health does not match expected HTTP status; investigate sanitized logs before retrying."
+            exit 1
+          }
+          echo "Destination Web and API proxy checked successfully."
+
+      - name: Cleanup private source, diagnostics, temporary ACR push credential
+        if: always()
+        shell: bash
+        run: |
+          docker logout crcoderatsmigc26m0911.azurecr.io >/dev/null 2>&1 || true
+          az acr token credential delete -r crcoderatsmigc26m0911 \
+            -n coderats-mirror-build-push --password1 --subscription "$SID" \
+            --only-show-errors -o none >/dev/null 2>&1 || true
+          rm -rf web-src
+          rm -f "$RUNNER_TEMP"/acr-build-login-private.log \
+            "$RUNNER_TEMP"/web-dns-build-private.log "$RUNNER_TEMP"/web-runtime-update-private.log \
+            "$RUNNER_TEMP"/target-web-revisions.json
+          az logout --output none >/dev/null 2>&1 || true

@@ -57,7 +57,7 @@ jobs:
           [[ "$TID" == "1cf74c7e-fcd9-46f7-8a9d-e699d3529003" ]]
           [[ "$(az account show --query id -o tsv)" == "$SID" ]]
           [[ "$(az account show --query tenantId -o tsv)" == "$TID" ]]
-          az containerapp env show --subscription "$SID" -g "$RG" -n "$CAE" --only-show-errors -o json > "$RUNNER_TEMP/target-env.json"
+          az rest --method get --url "https://management.azure.com/subscriptions/$SID/resourceGroups/$RG/providers/Microsoft.App/managedEnvironments/$CAE?api-version=2026-07-01" --only-show-errors -o json > "$RUNNER_TEMP/target-env.json"
           az containerapp show --subscription "$SID" -g "$RG" -n "$WEB" --only-show-errors -o json > "$RUNNER_TEMP/target-web.json"
           az containerapp show --subscription "$SID" -g "$RG" -n "$API" --only-show-errors -o json > "$RUNNER_TEMP/target-api.json"
           python3 - <<'PY'

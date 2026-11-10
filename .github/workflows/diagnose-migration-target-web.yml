@@ -1,0 +1,148 @@
+name: Diagnose CodeRats migration-target Web and existing apps (read-only)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [".github/workflows/diagnose-migration-target-web.yml"]
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: coderats-migration-target-web-diagnostic
+  cancel-in-progress: false
+
+jobs:
+  inspect:
+    if: >-
+      github.repository == 'coderats-hub/coderats-deploy' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' ||
+       startsWith(github.event.head_commit.message, 'ci(migration): diagnose target web'))
+    runs-on: ubuntu-latest
+    environment: migration-target
+    timeout-minutes: 20
+    env:
+      SID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      TID: ${{ secrets.AZURE_TENANT_ID }}
+      RG: rg-coderats-migration-c26m0911
+      CAE: cae-coderatsmig-c26m0911
+      ACR: crcoderatsmigc26m0911
+      WEB: ca-coderatsmig-web-c26m0911
+      API: ca-coderatsmig-api-c26m0911
+      GRADER: ca-coderatsmig-grader-c26m0911
+    steps:
+      - name: Authenticate only to the new Azure for Students subscription
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Verify target and inspect public-safe Container App metadata only
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SID" == "da3650a9-e291-43f1-ae4b-9dcc8ff84239" ]]
+          [[ "$TID" == "1cf74c7e-fcd9-46f7-8a9d-e699d3529003" ]]
+          [[ "$(az account show --query id -o tsv)" == "$SID" ]]
+          [[ "$(az account show --query tenantId -o tsv)" == "$TID" ]]
+          az group show --subscription "$SID" -n "$RG" --query name -o tsv --only-show-errors >/dev/null
+          domain="$(az containerapp env show --subscription "$SID" -g "$RG" -n "$CAE" --query properties.defaultDomain -o tsv --only-show-errors)"
+          [[ "$domain" == *.azurecontainerapps.io ]]
+          {
+            echo '### Isolated migration-target Container Apps diagnostic'
+            echo '- Destination subscription and tenant: verified'
+            echo '- Operation: read-only; no DEV resources, secrets, user data, or database rows accessed'
+          } >> "$GITHUB_STEP_SUMMARY"
+          for app in "$GRADER" "$API" "$WEB"; do
+            if az containerapp show --subscription "$SID" -g "$RG" -n "$app" --query name -o tsv --only-show-errors >/dev/null 2>&1; then
+              status="$(az containerapp show --subscription "$SID" -g "$RG" -n "$app" --query properties.runningStatus -o tsv --only-show-errors 2>/dev/null || echo unavailable)"
+              echo "- $app: exists; ARM runningStatus=$status" >> "$GITHUB_STEP_SUMMARY"
+              az containerapp revision list --subscription "$SID" -g "$RG" -n "$app" \
+                --query '[].{name:name,health:properties.healthState,running:properties.runningState,active:properties.active}' \
+                --only-show-errors -o json > "$RUNNER_TEMP/revisions.json" 2>/dev/null || echo '[]' > "$RUNNER_TEMP/revisions.json"
+              python3 - <<'PY'
+          import json,os
+          r=json.load(open(os.path.join(os.environ["RUNNER_TEMP"],"revisions.json")))
+          if not isinstance(r,list): r=[]
+          ok={"Healthy","Running","Provisioned","True","False","Unknown","None"}
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:
+              f.write(f"  - Revisions observed: {len(r)}\n")
+              for x in r[-3:]:
+                  health=str(x.get("health","unknown"))
+                  running=str(x.get("running","unknown"))
+                  f.write(f"  - Revision health: {health if health in ok else 'other'} / {running if running in ok else 'other'}\n")
+          PY
+            else
+              echo "- $app: absent (no Container App ARM resource)" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
+          if az containerapp show --subscription "$SID" -g "$RG" -n "$WEB" --query name -o tsv --only-show-errors >/dev/null 2>&1; then
+            fqdn="$(az containerapp show --subscription "$SID" -g "$RG" -n "$WEB" --query properties.configuration.ingress.fqdn -o tsv --only-show-errors 2>/dev/null || true)"
+            if [[ "$fqdn" == *.azurecontainerapps.io ]]; then
+              echo "- Web public endpoint: https://$fqdn" >> "$GITHUB_STEP_SUMMARY"
+              code="$(curl -L -sS -o /dev/null --connect-timeout 7 --max-time 18 -w '%{http_code}' "https://$fqdn/health" 2>/dev/null || true)"
+              [[ "$code" =~ ^[0-9]{3}$ ]] || code="unavailable"
+              echo "- Web /health HTTP status: $code" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          fi
+          echo "- Expected Web origin based on CAE default domain: https://$WEB.$domain" >> "$GITHUB_STEP_SUMMARY"
+          echo 'No raw app configuration or logs were printed.' 
+
+      - name: Inspect recent Web ARM activity and report only allowlisted error codes
+        shell: bash
+        run: |
+          set -euo pipefail
+          if az monitor activity-log list --subscription "$SID" --resource-group "$RG" \
+            --offset 4h --max-events 100 --only-show-errors -o json > "$RUNNER_TEMP/mirror-arm-events.json" 2>/dev/null; then
+            python3 - <<'PY'
+          import json,os,re
+          records=json.load(open(os.path.join(os.environ["RUNNER_TEMP"],"mirror-arm-events.json")))
+          if not isinstance(records,list): records=[]
+          web=os.environ["WEB"].casefold()
+          matches=[]
+          for x in records:
+              res=str(x.get("resourceId") or x.get("resourceUri") or "").casefold()
+              if not (res.endswith("/containerapps/"+web) or res.endswith("/containerapps/"+web+"/write")):
+                  continue
+              status=x.get("status") or {}
+              sub=x.get("subStatus") or {}
+              def safe_state(v):
+                  s=str(v.get("value","") if isinstance(v,dict) else v)
+                  return s if re.fullmatch(r"[A-Za-z0-9_.-]{1,48}",s) else "other"
+              msg=(x.get("properties") or {}).get("statusMessage") or ""
+              if isinstance(msg,dict):
+                  payload=msg
+              else:
+                  try: payload=json.loads(msg)
+                  except (ValueError,TypeError): payload={}
+              def code_from(v):
+                  if isinstance(v,dict):
+                      if isinstance(v.get("error"),dict): return code_from(v["error"])
+                      return v.get("code") or ""
+                  return ""
+              code=code_from(payload)
+              if not isinstance(code,str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{1,62}",code): code="unavailable"
+              matches.append((str(x.get("eventTimestamp") or "")[:20],safe_state(status),safe_state(sub),code))
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:
+              f.write("### Recent Web Azure Resource Manager events\n")
+              if not matches: f.write("- No Web-specific ARM events found in the available four-hour window\n")
+              else:
+                  for time,status,sub,code in matches[-10:]:
+                      t=time if re.fullmatch(r"[0-9TZ:.-]{1,20}",time) else "unknown"
+                      f.write(f"- {t}: status={status}, subStatus={sub}, errorCode={code}\n")
+          PY
+          else
+            echo '- ARM activity event query: unavailable (no raw diagnostics exposed)' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Print safe summary
+        if: always()
+        shell: bash
+        run: |
+          if [[ -f "$GITHUB_STEP_SUMMARY" ]]; then cat "$GITHUB_STEP_SUMMARY"; fi
+          rm -f "$RUNNER_TEMP/revisions.json" "$RUNNER_TEMP/mirror-arm-events.json"
+          az logout --output none >/dev/null 2>&1 || true

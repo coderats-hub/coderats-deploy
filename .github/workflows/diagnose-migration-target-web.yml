@@ -531,8 +531,8 @@ jobs:
           classes={
             "request-forwarding":r"proxy error|error proxying|fetch failed|failed to proxy|rewrit",
             "network-dns":r"enotfound|eai_again|name or service not known|getaddrinfo",
-            "network-connect":r"econnrefused|econnreset|etimedout|connect timeout|socket hang up|und_err_connect",
-            "tls-protocol":r"eproto|ssl routines|wrong version number|certificate verify",
+            "network-connect":r"econnrefused|econnreset|etimedout|connect timeout|socket hang up|und_err_connect|und_err_socket|fetch failed|certificate",
+            "tls-protocol":r"eproto|ssl routines|wrong version number|certificate verify|err_tls_cert_altname_invalid|unable_to_verify_leaf_signature|unable_to_get_issuer_cert|self.signed.certificate|certificate has expired|tlsv1 alert",
             "spring-500":r"internalservererror|http 500|status=500|servlet.*exception",
             "spring-security-401":r"unauthorized|authenticationentrypoint|status=401",
             "runtime-error":r"uncaught|typeerror:|referenceerror:|error \[|exception",

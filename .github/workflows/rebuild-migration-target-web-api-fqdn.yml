@@ -136,18 +136,32 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          token="coderats-mirror-build-push"
+          # Dedicated build token avoids reusing credentials rotated/deleted by
+          # the original three-image build workflow and isolates its lifecycle.
+          token="coderats-mirror-web-dnsfix-push"
+          private_log="$RUNNER_TEMP/acr-dns-token-private.log"
           if ! az acr token show --registry "$ACR" --name "$token" --subscription "$SID" \
               --query name -o tsv --only-show-errors >/dev/null 2>&1; then
-            az acr token create --registry "$ACR" --name "$token" --scope-map _repositories_push \
-              --subscription "$SID" --only-show-errors -o none
+            if ! az acr token create --registry "$ACR" --name "$token" --scope-map _repositories_push \
+                --subscription "$SID" --only-show-errors -o none > "$private_log" 2>&1; then
+              echo "::error::Web-only ACR push token creation failed; raw Azure output withheld."
+              exit 1
+            fi
           fi
-          az acr token update --registry "$ACR" --name "$token" --status enabled \
-            --subscription "$SID" --only-show-errors -o none
-          pass="$(az acr token credential generate --registry "$ACR" --name "$token" \
-            --password1 --expiration-in-days 1 --subscription "$SID" \
-            --query 'passwords[0].value' -o tsv --only-show-errors)"
-          [[ -n "$pass" ]]
+          echo "Web-only ACR push token exists."
+          if ! az acr token update --registry "$ACR" --name "$token" --status enabled \
+              --subscription "$SID" --only-show-errors -o none > "$private_log" 2>&1; then
+            echo "::error::Web-only ACR push token enable failed; raw Azure output withheld."
+            exit 1
+          fi
+          echo "Web-only ACR push token enabled."
+          if ! pass="$(az acr token credential generate --registry "$ACR" --name "$token" \
+              --password1 --expiration-in-days 1 --subscription "$SID" \
+              --query 'passwords[0].value' -o tsv --only-show-errors 2>"$private_log")"; then
+            echo "::error::Web-only ACR push credential generation failed; raw Azure output withheld."
+            exit 1
+          fi
+          [[ -n "$pass" ]] || { echo "::error::Web-only push credential empty."; exit 1; }
           echo "::add-mask::$pass"
           printf '%s' "$pass" | docker login "$ACR.azurecr.io" --username "$token" \
             --password-stdin > "$RUNNER_TEMP/acr-build-login-private.log" 2>&1 || {
@@ -255,10 +269,10 @@ jobs:
         run: |
           docker logout crcoderatsmigc26m0911.azurecr.io >/dev/null 2>&1 || true
           az acr token credential delete -r crcoderatsmigc26m0911 \
-            -n coderats-mirror-build-push --password1 --subscription "$SID" \
+            -n coderats-mirror-web-dnsfix-push --password1 --subscription "$SID" \
             --only-show-errors -o none >/dev/null 2>&1 || true
           rm -rf web-src
-          rm -f "$RUNNER_TEMP"/acr-build-login-private.log \
+          rm -f "$RUNNER_TEMP"/acr-dns-token-private.log "$RUNNER_TEMP"/acr-build-login-private.log \
             "$RUNNER_TEMP"/web-dns-build-private.log "$RUNNER_TEMP"/web-runtime-update-private.log \
             "$RUNNER_TEMP"/target-web-revisions.json
           az logout --output none >/dev/null 2>&1 || true

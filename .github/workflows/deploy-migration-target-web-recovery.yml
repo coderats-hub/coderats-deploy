@@ -101,37 +101,110 @@ jobs:
           unset pullpass
           echo "Web-only scoped pull credential created; existing API/Grader registry tokens untouched."
 
-      - name: Create destination Web without ingress to isolate Azure external-ingress failure
+      - name: Stage 1 - create minimal Web resource with public bootstrap image and no identity or ingress
         if: env.WEB_EXISTS == 'false'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # A public bootstrap image isolates Azure Container Apps ARM provisioning from
+          # ACR token, user-managed identity, internal application configuration, and ingress.
+          # No public endpoint will exist at this stage.
+          log="$RUNNER_TEMP/mirror-web-minimal-private.log"
+          if az containerapp create --subscription "$SID" -g "$RG" -n "$WEB" \
+            --environment "$CAE" \
+            --image mcr.microsoft.com/azuredocs/containerapps-helloworld:latest \
+            --min-replicas 0 --max-replicas 1 --cpu 0.5 --memory 1Gi \
+            --only-show-errors -o none > "$log" 2>&1; then
+            echo "Stage 1 PASS: target Web ARM resource created without identity, registry auth, or ingress."
+          else
+            python3 - "$log" <<'PY'
+          import sys,re
+          s=open(sys.argv[1],errors="replace").read()
+          candidates=re.findall(r'"code"\s*:\s*"([A-Za-z][A-Za-z0-9_]{1,64})"',s)
+          candidates+=re.findall(r'\(([A-Za-z][A-Za-z0-9_]{1,64})\)',s)
+          allow={"UnexpectedException","BadRequest","Conflict","ResourceNotFound",
+                 "RequestDisallowedByAzure","RequestDisallowedByPolicy","QuotaExceeded",
+                 "ResourceQuotaExceeded","InvalidTemplate","OperationNotAllowed","AuthorizationFailed",
+                 "InvalidParameterValue","ContainerAppOperationError","ManagedEnvironmentNotFound"}
+          print("::error::Stage 1 minimal Azure Container App create failed: "+
+                next((x for x in candidates if x in allow),"unclassified")+
+                ". Public bootstrap payload had no ACR credentials, no identity and no ingress.")
+          PY
+            exit 1
+          fi
+
+      - name: Stage 2 - configure Web-specific ACR read-only credential on existing Container App
+        shell: bash
+        run: |
+          set -euo pipefail
+          # If the Web resource already exists from a partial retry, reuse it.
+          # Never rotate the shared API/Grader ACR token.
+          if [[ "$WEB_EXISTS" == "true" ]]; then
+            echo "Reusing an existing Web; verify its registry configuration before changing it."
+            registered="$(az containerapp registry list -g "$RG" -n "$WEB" --subscription "$SID" \
+              --query "[?server=='$ACR.azurecr.io'].server | [0]" -o tsv --only-show-errors 2>/dev/null || true)"
+            if [[ "$registered" == "$ACR.azurecr.io" ]]; then
+              echo "Stage 2 PASS: existing target Web registry entry verified."
+              exit 0
+            fi
+            echo "::error::Existing Web registry is missing; refusing to overwrite unknown app state automatically."
+            exit 1
+          fi
+          log="$RUNNER_TEMP/mirror-web-registry-private.log"
+          if az containerapp registry set --subscription "$SID" -g "$RG" -n "$WEB" \
+            --server "$ACR.azurecr.io" --username "$ACR_WEB_TOKEN" \
+            --password "$WEB_ACR_PULL_PASSWORD" --only-show-errors -o none > "$log" 2>&1; then
+            echo "Stage 2 PASS: target Web ACR registry credential set without changing API/Grader."
+          else
+            echo "::error::Stage 2 target Web registry configuration failed; private CLI log withheld."
+            exit 1
+          fi
+
+      - name: Stage 3 - switch to pinned CodeRats Web image and configure runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected="$ACR.azurecr.io/web-coderats-base:mirror-db35f8c2f5fb"
+          current="$(az containerapp show --subscription "$SID" -g "$RG" -n "$WEB" \
+            --query 'properties.template.containers[0].image' -o tsv --only-show-errors)"
+          if [[ "$current" == "$expected" ]]; then
+            echo "Stage 3 PASS: exact Web image already deployed; no revision changed."
+            exit 0
+          fi
+          if [[ "$current" != "mcr.microsoft.com/azuredocs/containerapps-helloworld:latest" ]]; then
+            echo "::error::Web has unexpected image: refusing to overwrite manually changed app."
+            exit 1
+          fi
+          log="$RUNNER_TEMP/mirror-web-update-private.log"
+          if az containerapp update --subscription "$SID" -g "$RG" -n "$WEB" \
+            --image "$expected" --min-replicas 1 --max-replicas 1 \
+            --set-env-vars "HOSTNAME=0.0.0.0" "PORT=3000" \
+              "API_PROXY_TARGET=http://$API" "NEXT_PUBLIC_API_URL=$MIRROR_WEB_ORIGIN" \
+            --only-show-errors -o none > "$log" 2>&1; then
+            echo "Stage 3 PASS: target Web image and exact runtime vars updated."
+          else
+            echo "::error::Stage 3 CodeRats image switch failed; private CLI log withheld."
+            exit 1
+          fi
+
+      - name: Stage 4 - attach existing destination Web identity separately
         shell: bash
         run: |
           set -euo pipefail
           identity="$(az identity show -g "$RG" -n id-coderatsmig-web-c26m0911 \
             --subscription "$SID" --query id -o tsv --only-show-errors)"
-          log="$RUNNER_TEMP/mirror-web-create-private.log"
-          if az containerapp create --subscription "$SID" -g "$RG" -n "$WEB" \
-            --environment "$CAE" --image "$ACR.azurecr.io/web-coderats-base:mirror-db35f8c2f5fb" \
-            --user-assigned "$identity" \
-            --registry-server "$ACR.azurecr.io" --registry-username "$ACR_WEB_TOKEN" \
-            --registry-password "$WEB_ACR_PULL_PASSWORD" \
-            --min-replicas 1 --max-replicas 1 --cpu 0.5 --memory 1Gi \
-            --env-vars "HOSTNAME=0.0.0.0" "PORT=3000" \
-              "API_PROXY_TARGET=http://$API" "NEXT_PUBLIC_API_URL=$MIRROR_WEB_ORIGIN" \
-            --only-show-errors -o none > "$log" 2>&1; then
-            echo "Target Web Container App ARM creation succeeded with no ingress."
+          attached="$(az containerapp identity show --subscription "$SID" -g "$RG" -n "$WEB" \
+            --query "userAssignedIdentities | keys(@)" -o tsv --only-show-errors 2>/dev/null || true)"
+          if [[ "$attached" == *"$identity"* ]]; then
+            echo "Stage 4 PASS: expected Web user-assigned identity already present."
+            exit 0
+          fi
+          log="$RUNNER_TEMP/mirror-web-identity-private.log"
+          if az containerapp identity assign --subscription "$SID" -g "$RG" -n "$WEB" \
+            --user-assigned "$identity" --only-show-errors -o none > "$log" 2>&1; then
+            echo "Stage 4 PASS: identity assigned after independent resource creation."
           else
-            python3 - "$log" <<'PY'
-          import re,sys
-          s=open(sys.argv[1],errors="replace").read()
-          codes=re.findall(r"\(([A-Za-z][A-Za-z0-9_]{1,64})\)",s)
-          codes+=re.findall(r'"code"\s*:\s*"([A-Za-z][A-Za-z0-9_]{1,64})"',s)
-          allow={"UnexpectedException","BadRequest","Conflict","ResourceNotFound","RequestDisallowedByAzure",
-                 "RequestDisallowedByPolicy","ResourceQuotaExceeded","QuotaExceeded","InvalidTemplate",
-                 "OperationNotAllowed","AuthorizationFailed","InvalidParameterValue",
-                 "ContainerAppOperationError","ManagedEnvironmentNotFound"}
-          shown=next((x for x in codes if x in allow),"unclassified")
-          print("::error::Web Container App ARM create failed (sanitized error code: "+shown+"). No secret-bearing CLI logs published.")
-          PY
+            echo "::error::Stage 4 Web identity attachment failed. This isolates the managed-identity path."
             exit 1
           fi
 
@@ -212,5 +285,5 @@ jobs:
         if: always()
         shell: bash
         run: |
-          rm -f "$RUNNER_TEMP/mirror-web-create-private.log" "$RUNNER_TEMP/mirror-web-ingress-private.log"
+          rm -f "$RUNNER_TEMP/mirror-web-minimal-private.log" "$RUNNER_TEMP/mirror-web-registry-private.log" "$RUNNER_TEMP/mirror-web-update-private.log" "$RUNNER_TEMP/mirror-web-identity-private.log" "$RUNNER_TEMP/mirror-web-ingress-private.log"
           az logout --output none >/dev/null 2>&1 || true

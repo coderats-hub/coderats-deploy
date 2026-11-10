@@ -1,0 +1,262 @@
+name: Configure isolated migration-target API GitHub OAuth
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "Type ENABLE_TARGET_OAUTH (target API only; no data migration)"
+        required: true
+        type: string
+  push:
+    branches: [main]
+    paths: [".github/workflows/configure-migration-target-oauth.yml"]
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: coderats-migration-target-oauth
+  cancel-in-progress: false
+
+jobs:
+  configure:
+    if: >-
+      github.repository == 'coderats-hub/coderats-deploy' &&
+      github.ref == 'refs/heads/main' &&
+      (
+        (github.event_name == 'workflow_dispatch' && inputs.confirmation == 'ENABLE_TARGET_OAUTH') ||
+        (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'ci(migration): configure target API OAuth'))
+      )
+    environment: migration-target
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      SID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      TID: ${{ secrets.AZURE_TENANT_ID }}
+      RG: rg-coderats-migration-c26m0911
+      CAE: cae-coderatsmig-wp-c26m0911
+      WEB: ca-cdmstd-web-c26m0911
+      API: ca-cdmstd-api-c26m0911
+      CLIENT_ID: Iv23lij1ARW37Q6GIgoF
+      KEY_SECRET: github-token-encryption-keys
+      CLIENT_SECRET: github-oauth-client-secret
+
+    steps:
+      - name: Authenticate to destination only
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Verify exact isolated destination and OAuth configuration preconditions
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SID" == "da3650a9-e291-43f1-ae4b-9dcc8ff84239" ]]
+          [[ "$TID" == "1cf74c7e-fcd9-46f7-8a9d-e699d3529003" ]]
+          [[ "$(az account show --query id -o tsv)" == "$SID" ]]
+          [[ "$(az account show --query tenantId -o tsv)" == "$TID" ]]
+          az containerapp env show --subscription "$SID" -g "$RG" -n "$CAE" --only-show-errors -o json > "$RUNNER_TEMP/target-env.json"
+          az containerapp show --subscription "$SID" -g "$RG" -n "$WEB" --only-show-errors -o json > "$RUNNER_TEMP/target-web.json"
+          az containerapp show --subscription "$SID" -g "$RG" -n "$API" --only-show-errors -o json > "$RUNNER_TEMP/target-api.json"
+          python3 - <<'PY'
+          import json,os,sys
+          t=os.environ['RUNNER_TEMP']
+          env=json.load(open(os.path.join(t,'target-env.json')))
+          web=json.load(open(os.path.join(t,'target-web.json')))
+          api=json.load(open(os.path.join(t,'target-api.json')))
+          p=env.get('properties') or {}
+          domain=p.get('defaultDomain') or ''
+          if env.get('name')!=os.environ['CAE'] or p.get('provisioningState')!='Succeeded' or p.get('environmentMode')!='WorkloadProfiles' or not domain.endswith('.brazilsouth.azurecontainerapps.io'):
+              sys.exit('::error::Destination Container Apps Environment verification failed.')
+          wi=((web.get('properties') or {}).get('configuration') or {}).get('ingress') or {}
+          ai=((api.get('properties') or {}).get('configuration') or {}).get('ingress') or {}
+          if (web.get('name')!=os.environ['WEB'] or api.get('name')!=os.environ['API'] or
+              wi.get('external') is not True or wi.get('targetPort')!=3000 or
+              ai.get('external') is not False or ai.get('targetPort')!=8080 or
+              str(ai.get('fqdn','')).lower() != (os.environ['API']+'.internal.'+domain).lower()):
+              sys.exit('::error::Unexpected target Web/API topology. No update performed.')
+          origin='https://'+str(wi.get('fqdn') or '')
+          if not origin.endswith('.'+domain) or origin.split('/')[2]!=os.environ['WEB']+'.'+domain:
+              sys.exit('::error::Unexpected isolated public Web origin. No update performed.')
+          containers=((api.get('properties') or {}).get('template') or {}).get('containers') or []
+          if len(containers)!=1:
+              sys.exit('::error::Target API container count changed. No update performed.')
+          values={e.get('name'):e for e in containers[0].get('env') or []}
+          old=values.get('GITHUB_APP_CLIENT_ID',{}).get('value')
+          if old not in (None,'migration-oauth-disabled',os.environ['CLIENT_ID']):
+              sys.exit('::error::Unexpected OAuth client ID; refusing to overwrite.')
+          oldsecret=values.get('GITHUB_APP_CLIENT_SECRET',{}).get('secretRef')
+          if oldsecret not in (None,'github-oauth-placeholder',os.environ['CLIENT_SECRET']):
+              sys.exit('::error::Unexpected existing OAuth secret reference.')
+          mode=values.get('GITHUB_TOKEN_ENCRYPTION_MODE',{}).get('value')
+          if mode not in (None,'strict'):
+              sys.exit('::error::Unexpected token encryption mode; no update performed.')
+          for key in ('GET_WORKER_ENABLED','GET_BACKFILL_ENABLED','GRADER_POLLING_ENABLED'):
+              if values.get(key,{}).get('value') not in (None,'false'):
+                  sys.exit('::error::Target background processing is enabled; refusing OAuth activation.')
+          existing_ref=values.get('GITHUB_TOKEN_ENCRYPTION_KEYS',{}).get('secretRef')
+          if existing_ref not in (None,os.environ['KEY_SECRET']):
+              sys.exit('::error::Unexpected token encryption secret reference.')
+          with open(os.environ['GITHUB_ENV'],'a') as out:
+              out.write('WEB_ORIGIN='+origin+'\n')
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as out:
+              out.write('### Isolated target OAuth preflight\n- Destination, tenant, WorkloadProfiles and private API ingress: verified\n- Existing token keys: not overwritten\n- Background workers: disabled\n')
+          print('Destination identity, target API and OAuth guardrails verified.')
+          PY
+
+      - name: Verify OAuth secret and create or preserve token encryption key
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64,json,os,secrets,subprocess,sys
+          def az(*args):
+              result=subprocess.run(['az',*args],capture_output=True,text=True)
+              if result.returncode:
+                  sys.exit('::error::Target-only Azure secrets operation failed (details suppressed).')
+              return result.stdout
+          try:
+              raw=az('containerapp','secret','list','--show-values',
+                     '--subscription',os.environ['SID'],'-g',os.environ['RG'],
+                     '-n',os.environ['API'],'--only-show-errors','-o','json')
+              entries=json.loads(raw)
+              found={entry.get('name'):entry.get('value') for entry in entries if isinstance(entry,dict)}
+              client=found.get(os.environ['CLIENT_SECRET'])
+              if not isinstance(client,str) or len(client)<16:
+                  sys.exit('::error::GitHub login Client Secret missing or empty in target API.')
+              kname=os.environ['KEY_SECRET']
+              keyregistry=found.get(kname)
+              if keyregistry is None:
+                  key_id='mirror2026'
+                  encoded=base64.urlsafe_b64encode(secrets.token_bytes(32)).decode().rstrip('=')
+                  keyregistry=key_id+':'+encoded
+                  print('::add-mask::'+keyregistry)
+                  az('containerapp','secret','set','--subscription',os.environ['SID'],
+                     '-g',os.environ['RG'],'-n',os.environ['API'],
+                     '--secrets',kname+'='+keyregistry,'--only-show-errors','-o','none')
+                  status='created'
+              else:
+                  status='preserved'
+              keys={}
+              for part in keyregistry.split(','):
+                  pair=part.split(':',1)
+                  if len(pair)!=2 or not pair[0].replace('_','').replace('-','').isalnum():
+                      sys.exit('::error::Existing encryption key registry is malformed.')
+                  encoded=pair[1]
+                  decoded=base64.urlsafe_b64decode(encoded+'='*((-len(encoded))%4))
+                  if len(decoded)!=32 or pair[0] in keys:
+                      sys.exit('::error::Existing encryption key registry contains an invalid key.')
+                  keys[pair[0]]=True
+              key_id='mirror2026' if 'mirror2026' in keys else None
+              if key_id is None:
+                  sys.exit('::error::Unexpected existing encryption key IDs; manual review required. No OAuth revision activated.')
+              with open(os.environ['GITHUB_ENV'],'a') as out:
+                  out.write('KEY_ID='+key_id+'\n')
+              with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as out:
+                  out.write('- GitHub Client Secret: present (value not disclosed)\n')
+                  out.write('- Target AES-256-GCM key: '+status+' (value not disclosed)\n')
+              print('Target-only OAuth credential and encryption key preconditions passed.')
+          except (ValueError,TypeError,UnicodeError):
+              sys.exit('::error::Target secret validation failed (sensitive details suppressed).')
+          PY
+
+      - name: Activate GitHub OAuth and strict encryption only in target API
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SID" == "da3650a9-e291-43f1-ae4b-9dcc8ff84239" ]]
+          [[ "$TID" == "1cf74c7e-fcd9-46f7-8a9d-e699d3529003" ]]
+          if ! az containerapp update --subscription "$SID" -g "$RG" -n "$API" \
+            --set-env-vars \
+              "GITHUB_APP_CLIENT_ID=$CLIENT_ID" \
+              "GITHUB_APP_CLIENT_SECRET=secretref:$CLIENT_SECRET" \
+              "GITHUB_TOKEN_ENCRYPTION_MODE=strict" \
+              "GITHUB_TOKEN_ACTIVE_KEY_ID=$KEY_ID" \
+              "GITHUB_TOKEN_ENCRYPTION_KEYS=secretref:$KEY_SECRET" \
+              "GITHUB_TOKEN_MIGRATE_LEGACY=false" \
+              "GITHUB_OAUTH_REDIRECT_URI=$WEB_ORIGIN/login/oauth2/code/github" \
+              "FRONTEND_URL=$WEB_ORIGIN" \
+              "CORS_ALLOWED_ORIGINS=$WEB_ORIGIN" \
+              "SERVER_SERVLET_SESSION_COOKIE_SECURE=true" \
+              "GET_WORKER_ENABLED=false" \
+              "GET_BACKFILL_ENABLED=false" \
+              "GRADER_POLLING_ENABLED=false" \
+            --only-show-errors -o none > "$RUNNER_TEMP/oauth-update.log" 2>&1; then
+              echo "::error::Target API OAuth revision update failed. Private CLI output suppressed."
+              exit 1
+          fi
+          echo 'Target API revised without source, DNS, database or worker changes.'
+
+      - name: Verify target revision, anonymous API and OAuth redirect without a login
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json,os,subprocess,sys,time,urllib.request,urllib.error,urllib.parse
+          sid,rg,api=os.environ['SID'],os.environ['RG'],os.environ['API']
+          def az_json(*args):
+              r=subprocess.run(['az',*args,'--only-show-errors','-o','json'],capture_output=True,text=True)
+              if r.returncode:
+                  sys.exit('::error::Unable to verify isolated target revision.')
+              return json.loads(r.stdout)
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self,*args,**kwargs): return None
+          opener=urllib.request.build_opener(NoRedirect)
+          origin=os.environ['WEB_ORIGIN']
+          def check(path):
+              req=urllib.request.Request(origin+path,headers={'User-Agent':'coderats-migration-oauth-readiness'})
+              try:
+                  with opener.open(req,timeout=12) as res: return res.status,res.headers.get('Location','')
+              except urllib.error.HTTPError as e: return e.code,e.headers.get('Location','')
+              except Exception: return 0,''
+          ready=False
+          for i in range(15):
+              app=az_json('containerapp','show','--subscription',sid,'-g',rg,'-n',api)
+              cs=((app.get('properties') or {}).get('template') or {}).get('containers') or []
+              env={x.get('name'):x for x in (cs[0].get('env') or [])} if len(cs)==1 else {}
+              expected={
+                 'GITHUB_APP_CLIENT_ID':os.environ['CLIENT_ID'],
+                 'GITHUB_TOKEN_ENCRYPTION_MODE':'strict',
+                 'GITHUB_TOKEN_ACTIVE_KEY_ID':os.environ['KEY_ID'],
+                 'GITHUB_OAUTH_REDIRECT_URI':origin+'/login/oauth2/code/github',
+                 'FRONTEND_URL':origin,'GET_WORKER_ENABLED':'false',
+                 'GET_BACKFILL_ENABLED':'false','GRADER_POLLING_ENABLED':'false'}
+              config_ok=all(env.get(k,{}).get('value')==v for k,v in expected.items())
+              refs_ok=(env.get('GITHUB_APP_CLIENT_SECRET',{}).get('secretRef')==os.environ['CLIENT_SECRET'] and
+                       env.get('GITHUB_TOKEN_ENCRYPTION_KEYS',{}).get('secretRef')==os.environ['KEY_SECRET'])
+              if not config_ok or not refs_ok:
+                  sys.exit('::error::Target API revision configuration mismatch.')
+              health,_=check('/health')
+              anonymous,_=check('/api/v1/auth/me')
+              oauth,location=check('/oauth2/authorization/github')
+              u=urllib.parse.urlsplit(location)
+              q=urllib.parse.parse_qs(u.query)
+              oauth_ok=(oauth in (302,303) and u.hostname=='github.com' and
+                        u.path=='/login/oauth/authorize' and
+                        q.get('client_id')==[os.environ['CLIENT_ID']] and
+                        q.get('redirect_uri')==[origin+'/login/oauth2/code/github'] and
+                        bool(q.get('state')))
+              if health==200 and anonymous==401 and oauth_ok:
+                  ready=True
+                  break
+              time.sleep(10)
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as out:
+              out.write('### Target-only application and OAuth readiness\n')
+              out.write('- Web /health HTTP 200: '+str(health==200)+'\n')
+              out.write('- Anonymous /api/v1/auth/me HTTP 401: '+str(anonymous==401)+'\n')
+              out.write('- GitHub OAuth authorization redirect, client ID and callback: '+str(oauth_ok)+'\n')
+              out.write('- No login, user data copy, source change or DNS update performed\n')
+          if not ready:
+              sys.exit('::error::Target OAuth readiness failed; no login was attempted.')
+          print('Isolated mirror OAuth authorization initiation verified, without a user login.')
+          PY
+
+      - name: Remove transient inspection files and Azure login
+        if: always()
+        shell: bash
+        run: |
+          rm -f "$RUNNER_TEMP"/target-env.json "$RUNNER_TEMP"/target-web.json \
+            "$RUNNER_TEMP"/target-api.json "$RUNNER_TEMP"/oauth-update.log
+          az logout --output none >/dev/null 2>&1 || true

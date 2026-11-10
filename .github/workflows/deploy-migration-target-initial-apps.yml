@@ -1,0 +1,262 @@
+name: Deploy CodeRats mirror Web API Grader (target-only, empty-data stage)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [".github/workflows/deploy-migration-target-initial-apps.yml"]
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: coderats-migration-target-first-apps
+  cancel-in-progress: false
+
+jobs:
+  deploy-mirror:
+    if: >-
+      github.repository == 'coderats-hub/coderats-deploy' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' ||
+       startsWith(github.event.head_commit.message, 'ci(migration): deploy isolated mirror apps'))
+    runs-on: ubuntu-latest
+    environment: migration-target
+    timeout-minutes: 80
+    env:
+      SID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      TID: ${{ secrets.AZURE_TENANT_ID }}
+      RG: rg-coderats-migration-c26m0911
+      ACR: crcoderatsmigc26m0911
+      CAE: cae-coderatsmig-c26m0911
+      DB: psql-coderatsmig-c26m0911
+      GRADER: ca-coderatsmig-grader-c26m0911
+      API: ca-coderatsmig-api-c26m0911
+      WEB: ca-coderatsmig-web-c26m0911
+      TF_IN_AUTOMATION: "true"
+      TF_INPUT: "false"
+    steps:
+      - name: Sign in to new subscription using OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Confirm destination-only resources and prevent overwrite of any existing apps
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SID" == "da3650a9-e291-43f1-ae4b-9dcc8ff84239" ]]
+          [[ "$TID" == "1cf74c7e-fcd9-46f7-8a9d-e699d3529003" ]]
+          [[ "$(az account show --query id -o tsv)" == "$SID" ]]
+          [[ "$(az account show --query tenantId -o tsv)" == "$TID" ]]
+          [[ "$(az acr show -g "$RG" -n "$ACR" --subscription "$SID" --query name -o tsv --only-show-errors)" == "$ACR" ]]
+          [[ "$(az postgres flexible-server show -g "$RG" -n "$DB" --subscription "$SID" --query name -o tsv --only-show-errors)" == "$DB" ]]
+          for app in "$GRADER" "$API" "$WEB"; do
+            if az containerapp show -g "$RG" -n "$app" --subscription "$SID" --query name -o tsv --only-show-errors >/dev/null 2>&1; then
+              echo "::error::Destination application already exists: refusing to overwrite any running mirror."
+              exit 1
+            fi
+          done
+          domain="$(az containerapp env show -g "$RG" -n "$CAE" --subscription "$SID" --query properties.defaultDomain -o tsv --only-show-errors)"
+          [[ "$domain" == *.azurecontainerapps.io ]]
+          echo "MIRROR_WEB_ORIGIN=https://$WEB.$domain" >> "$GITHUB_ENV"
+          echo "Mirror environment validated; no existing apps will be overwritten."
+
+      - name: Read new DB credential from private isolated Terraform state
+        shell: bash
+        run: |
+          set -euo pipefail
+          key="$(az storage account keys list --subscription "$SID" -g rg-coderats-migration-state \
+            -n stcrtf8ff84239 --query '[0].value' -o tsv --only-show-errors)"
+          [[ -n "$key" ]]
+          echo "::add-mask::$key"
+          echo "ARM_ACCESS_KEY=$key" >> "$GITHUB_ENV"
+          unset key
+      - name: Setup Terraform for read-only secret output
+        uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "1.16.0"
+
+      - name: Extract only new target database password, never source credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/target-state"
+          printf 'terraform { backend "azurerm" {} }\n' > "$RUNNER_TEMP/target-state/backend.tf"
+          cd "$RUNNER_TEMP/target-state"
+          terraform init -input=false -no-color \
+            -backend-config=resource_group_name=rg-coderats-migration-state \
+            -backend-config=storage_account_name=stcrtf8ff84239 \
+            -backend-config=container_name=tfstate \
+            -backend-config=key=coderats/migration-target.tfstate \
+            > "$RUNNER_TEMP/mirror-state-read.log" 2>&1 || {
+              echo "::error::Could not access the isolated migration target Terraform state."; exit 1;
+            }
+          pass="$(terraform output -raw postgres_admin_password 2>/dev/null)" || exit 1
+          [[ "${#pass}" -ge 32 ]] || {
+            echo "::error::Target DB password is missing from new Terraform state."; exit 1;
+          }
+          echo "::add-mask::$pass"
+          echo "MIRROR_DB_PASSWORD=$pass" >> "$GITHUB_ENV"
+          unset pass
+          echo "Generated destination database password recovered securely."
+
+      - name: Create dedicated ACR read-only token (no admin/push access)
+        shell: bash
+        run: |
+          set -euo pipefail
+          token="coderats-mirror-apps-pull"
+          if ! az acr token show --registry "$ACR" --name "$token" --subscription "$SID" \
+            --query name -o tsv --only-show-errors >/dev/null 2>&1; then
+            az acr token create --registry "$ACR" --name "$token" \
+              --scope-map _repositories_pull --subscription "$SID" --only-show-errors -o none
+          fi
+          az acr token update --registry "$ACR" --name "$token" --status enabled \
+            --subscription "$SID" --only-show-errors -o none
+          pullpass="$(az acr token credential generate --registry "$ACR" --name "$token" \
+            --password1 --expiration-in-days 30 --subscription "$SID" \
+            --query 'passwords[0].value' -o tsv --only-show-errors)"
+          [[ -n "$pullpass" ]] || exit 1
+          echo "::add-mask::$pullpass"
+          echo "MIRROR_ACR_PULL_PASSWORD=$pullpass" >> "$GITHUB_ENV"
+          unset pullpass
+          echo "Registry pull token limited to data-plane read only (30-day expiration)."
+
+      - name: Permit Azure service access to empty mirror PostgreSQL only
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Initial boot only. Before copying production personal data,
+          # private networking / exact egress restriction must be reviewed.
+          az postgres flexible-server firewall-rule create \
+            --subscription "$SID" -g "$RG" -n "$DB" \
+            --rule-name allow-staging-azure-service \
+            --start-ip-address 0.0.0.0 --end-ip-address 0.0.0.0 \
+            --only-show-errors -o none
+          echo "Temporary Azure-services PostgreSQL firewall rule created for empty mirror."
+
+      - name: Prepare mirror integration secrets (NOT production OAuth or OpenAI)
+        shell: bash
+        run: |
+          set -euo pipefail
+          token="$(openssl rand -hex 32)"
+          oauth="$(openssl rand -hex 20)"
+          echo "::add-mask::$token"
+          echo "::add-mask::$oauth"
+          echo "MIRROR_GRADER_SERVICE_TOKEN=$token" >> "$GITHUB_ENV"
+          echo "MIRROR_OAUTH_PLACEHOLDER=$oauth" >> "$GITHUB_ENV"
+          unset token oauth
+
+      - name: Deploy private Grader with empty isolated database
+        shell: bash
+        run: |
+          set -euo pipefail
+          ident="$(az identity show -g "$RG" -n id-coderatsmig-grader-c26m0911 --subscription "$SID" --query id -o tsv --only-show-errors)"
+          url="postgresql+asyncpg://coderats_admin:$MIRROR_DB_PASSWORD@$DB.postgres.database.azure.com:5432/coderats_grader?ssl=require"
+          az containerapp create --subscription "$SID" -g "$RG" -n "$GRADER" \
+            --environment "$CAE" --image "$ACR.azurecr.io/api-grader-coderats:mirror-a126b16097ef" \
+            --user-assigned "$ident" \
+            --registry-server "$ACR.azurecr.io" --registry-username coderats-mirror-apps-pull \
+            --registry-password "$MIRROR_ACR_PULL_PASSWORD" \
+            --ingress internal --target-port 8000 \
+            --min-replicas 1 --max-replicas 1 --cpu 0.5 --memory 1Gi \
+            --secrets "grader-db-url=$url" "grader-service-token=$MIRROR_GRADER_SERVICE_TOKEN" \
+            --env-vars "DATABASE_URL=secretref:grader-db-url" \
+              "AUTOGRADER_INTEGRATION_TOKEN=secretref:grader-service-token" \
+              "SANDBOX_MODE=remote" "APP_ENV=migration" "OPENAI_MODEL=gpt-6" \
+            --only-show-errors -o none > "$RUNNER_TEMP/mirror-grader-deploy.log" 2>&1 || {
+              echo "::error::Target Grader Container App could not be created. No private logs published."; exit 1;
+            }
+          echo "Target Grader app created."
+
+      - name: Deploy private API with separate callback origin and GET disabled
+        shell: bash
+        run: |
+          set -euo pipefail
+          ident="$(az identity show -g "$RG" -n id-coderatsmig-api-c26m0911 --subscription "$SID" --query id -o tsv --only-show-errors)"
+          jdbc="jdbc:postgresql://$DB.postgres.database.azure.com:5432/coderats_base?sslmode=require"
+          az containerapp create --subscription "$SID" -g "$RG" -n "$API" \
+            --environment "$CAE" --image "$ACR.azurecr.io/api-coderats-base:mirror-899b5e0fdd5d" \
+            --user-assigned "$ident" \
+            --registry-server "$ACR.azurecr.io" --registry-username coderats-mirror-apps-pull \
+            --registry-password "$MIRROR_ACR_PULL_PASSWORD" \
+            --ingress internal --target-port 8080 \
+            --min-replicas 1 --max-replicas 1 --cpu 0.5 --memory 1Gi \
+            --secrets "database-password=$MIRROR_DB_PASSWORD" \
+              "grader-service-token=$MIRROR_GRADER_SERVICE_TOKEN" \
+              "github-oauth-placeholder=$MIRROR_OAUTH_PLACEHOLDER" \
+            --env-vars "DATABASE_URL=$jdbc" "DATABASE_USERNAME=coderats_admin" \
+              "DATABASE_PASSWORD=secretref:database-password" \
+              "APP_RUNTIME_MODE=http" "SPRING_PROFILES_ACTIVE=prod" \
+              "SERVER_SERVLET_SESSION_COOKIE_SECURE=true" \
+              "FRONTEND_URL=$MIRROR_WEB_ORIGIN" \
+              "GITHUB_OAUTH_REDIRECT_URI=$MIRROR_WEB_ORIGIN/login/oauth2/code/github" \
+              "CORS_ALLOWED_ORIGINS=$MIRROR_WEB_ORIGIN" \
+              "GITHUB_APP_CLIENT_ID=migration-oauth-disabled" \
+              "GITHUB_APP_CLIENT_SECRET=secretref:github-oauth-placeholder" \
+              "GRADER_API_URL=http://$GRADER" \
+              "GRADER_SERVICE_TOKEN=secretref:grader-service-token" \
+              "GRADER_POLLING_ENABLED=false" \
+              "MEDIA_STORAGE_DIRECTORY=/tmp/coderats-media" \
+              "MEDIA_PUBLIC_BASE_URL=$MIRROR_WEB_ORIGIN/api/v1/media" \
+              "GET_WORKER_ENABLED=false" "GET_BACKFILL_ENABLED=false" \
+            --only-show-errors -o none > "$RUNNER_TEMP/mirror-api-deploy.log" 2>&1 || {
+              echo "::error::Target API Container App could not be created. No private logs published."; exit 1;
+            }
+          echo "Target API app created, OAuth intentionally unconfigured."
+
+      - name: Deploy Web with public temporary Azure origin
+        shell: bash
+        run: |
+          set -euo pipefail
+          ident="$(az identity show -g "$RG" -n id-coderatsmig-web-c26m0911 --subscription "$SID" --query id -o tsv --only-show-errors)"
+          az containerapp create --subscription "$SID" -g "$RG" -n "$WEB" \
+            --environment "$CAE" --image "$ACR.azurecr.io/web-coderats-base:mirror-db35f8c2f5fb" \
+            --user-assigned "$ident" \
+            --registry-server "$ACR.azurecr.io" --registry-username coderats-mirror-apps-pull \
+            --registry-password "$MIRROR_ACR_PULL_PASSWORD" \
+            --ingress external --target-port 3000 \
+            --min-replicas 1 --max-replicas 1 --cpu 0.5 --memory 1Gi \
+            --env-vars "HOSTNAME=0.0.0.0" "PORT=3000" \
+              "API_PROXY_TARGET=http://$API" "NEXT_PUBLIC_API_URL=$MIRROR_WEB_ORIGIN" \
+            --only-show-errors -o none > "$RUNNER_TEMP/mirror-web-deploy.log" 2>&1 || {
+              echo "::error::Target Web Container App could not be created. No private logs published."; exit 1;
+            }
+          actual="$(az containerapp show --subscription "$SID" -g "$RG" -n "$WEB" \
+            --query properties.configuration.ingress.fqdn -o tsv --only-show-errors)"
+          [[ "https://$actual" == "$MIRROR_WEB_ORIGIN" ]] || {
+            echo "::error::Mirror Web ingress host mismatch with image build-time origin."; exit 1;
+          }
+          echo "Mirror Web app created at $MIRROR_WEB_ORIGIN"
+
+      - name: Verify app revisions without executing user-data operations
+        shell: bash
+        run: |
+          set -euo pipefail
+          for app in "$GRADER" "$API" "$WEB"; do
+            status="$(az containerapp show --subscription "$SID" -g "$RG" -n "$app" \
+              --query properties.runningStatus -o tsv --only-show-errors)"
+            echo "Target app $app status: $status"
+          done
+          {
+            echo "### CodeRats mirror - first isolated application deploy"
+            echo "- Temporary Web address: $MIRROR_WEB_ORIGIN"
+            echo "- Grader and API: internal ingress within new Container Apps Environment"
+            echo "- Production database and files: NOT copied or accessed"
+            echo "- GitHub OAuth: disabled pending independent test OAuth app"
+            echo "- Grader AI key: not imported; sandbox execution not enabled"
+            echo "- GET worker: not started"
+            echo "- PostgreSQL firewall includes temporary Azure-services rule; harden before transferring user data"
+            echo "- Registry auth: scoped read-only token (30-day expiry), no registry admin credentials"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Cleanup temporary credentials and private diagnostics
+        if: always()
+        shell: bash
+        run: |
+          rm -rf "$RUNNER_TEMP/target-state"
+          rm -f "$RUNNER_TEMP"/mirror-*-deploy.log "$RUNNER_TEMP"/mirror-state-read.log
+          az logout --output none >/dev/null 2>&1 || true

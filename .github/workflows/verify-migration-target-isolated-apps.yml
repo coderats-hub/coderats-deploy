@@ -1,0 +1,165 @@
+name: Verify CodeRats migration-target apps and readiness (read-only)
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "Type VERIFY_MIGRATION_TARGET for read-only inspection"
+        required: true
+        type: string
+  push:
+    branches: [main]
+    paths: [".github/workflows/verify-migration-target-isolated-apps.yml"]
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: coderats-migration-target-smoke-audit
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: >-
+      github.repository == 'coderats-hub/coderats-deploy' &&
+      github.ref == 'refs/heads/main' &&
+      ((github.event_name == 'workflow_dispatch' && inputs.confirmation == 'VERIFY_MIGRATION_TARGET') ||
+       (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'ci(migration): audit isolated target readiness')))
+    runs-on: ubuntu-latest
+    environment: migration-target
+    timeout-minutes: 15
+    env:
+      SID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      TID: ${{ secrets.AZURE_TENANT_ID }}
+      RG: rg-coderats-migration-c26m0911
+      CAE: cae-coderatsmig-c26m0911
+      DB: psql-coderatsmig-c26m0911
+      WEB: ca-coderatsmig-web-c26m0911
+      API: ca-coderatsmig-api-c26m0911
+      GRADER: ca-coderatsmig-grader-c26m0911
+
+    steps:
+      - name: Authenticate to target OIDC only
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Verify target identity and three live revision states without reading secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SID" == "da3650a9-e291-43f1-ae4b-9dcc8ff84239" ]]
+          [[ "$TID" == "1cf74c7e-fcd9-46f7-8a9d-e699d3529003" ]]
+          [[ "$(az account show --query id -o tsv)" == "$SID" ]]
+          [[ "$(az account show --query tenantId -o tsv)" == "$TID" ]]
+          domain="$(az containerapp env show --subscription "$SID" -g "$RG" -n "$CAE" \
+            --query properties.defaultDomain -o tsv --only-show-errors)"
+          [[ "$domain" == *.brazilsouth.azurecontainerapps.io ]]
+          echo "TARGET_DOMAIN=$domain" >> "$GITHUB_ENV"
+          echo "### New Azure target — application readiness" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Destination subscription, tenant, resource group and CAE: verified" >> "$GITHUB_STEP_SUMMARY"
+          for kind in web api grader; do
+            case "$kind" in
+              web) app="$WEB"; expected_ingress="true"; port=3000 ;;
+              api) app="$API"; expected_ingress="false"; port=8080 ;;
+              grader) app="$GRADER"; expected_ingress="false"; port=8000 ;;
+            esac
+            az containerapp show --subscription "$SID" -g "$RG" -n "$app" \
+              --query '{name:name,running:properties.runningStatus,provisioning:properties.provisioningState,identity:identity.type,ingress:properties.configuration.ingress,containers:properties.template.containers}' \
+              -o json --only-show-errors > "$RUNNER_TEMP/app-$kind-private.json"
+            az containerapp revision list --subscription "$SID" -g "$RG" -n "$app" \
+              --only-show-errors -o json > "$RUNNER_TEMP/revisions-$kind-private.json"
+            KIND="$kind" EXPECTED_APP="$app" EXPECTED_INGRESS="$expected_ingress" EXPECTED_PORT="$port" python3 - <<'PY'
+          import json,os
+          root=os.environ["RUNNER_TEMP"]
+          kind=os.environ["KIND"]
+          d=json.load(open(os.path.join(root,"app-"+kind+"-private.json")))
+          rev=json.load(open(os.path.join(root,"revisions-"+kind+"-private.json")))
+          ingress=d.get("ingress") or {}
+          expected_external=os.environ["EXPECTED_INGRESS"]=="true"
+          ok_running=d.get("running")=="Running"
+          ok_name=d.get("name")==os.environ["EXPECTED_APP"]
+          ok_ingress=ingress.get("external") is expected_external and ingress.get("targetPort")==int(os.environ["EXPECTED_PORT"])
+          healthy=[r for r in rev if isinstance(r,dict) and (r.get("properties") or {}).get("active") is True and
+                   (r.get("properties") or {}).get("healthState")=="Healthy" and
+                   (r.get("properties") or {}).get("runningState")=="Running"] if isinstance(rev,list) else []
+          state=d.get("provisioning")
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:
+              f.write("- "+kind+": running="+str(ok_running)+", app name verified="+str(ok_name)+
+                      ", expected ingress/port="+str(ok_ingress)+
+                      ", active Healthy revision="+str(bool(healthy))+
+                      ", ARM provisioning="+str(state if state in ("Succeeded","Failed","InProgress") else "other")+
+                      ", managed identity attached="+str(d.get("identity") not in ("None",None,""))+"\n")
+          if not(ok_name and ok_running and ok_ingress and healthy):
+              print("::error::"+kind+" target app failed isolated runtime/ingress checks.")
+              raise SystemExit(1)
+          PY
+          done
+          cat "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify isolated Web HTTPS and anonymous API proxy without exposing user content
+        shell: bash
+        run: |
+          set -euo pipefail
+          url="https://$WEB.$TARGET_DOMAIN"
+          health="$(curl -fsS -L -o /dev/null --connect-timeout 6 --max-time 18 -w '%{http_code}' "$url/health" 2>/dev/null || true)"
+          auth="$(curl -sS -L -o /dev/null --connect-timeout 6 --max-time 18 -w '%{http_code}' "$url/api/v1/auth/me" 2>/dev/null || true)"
+          [[ "$health" =~ ^[0-9]{3}$ ]] || health="unavailable"
+          [[ "$auth" =~ ^[0-9]{3}$ ]] || auth="unavailable"
+          {
+            echo "### HTTPS browser entrypoint / API connectivity"
+            echo "- Web /health: HTTP $health (expected 200)"
+            echo "- Web /api/v1/auth/me without login: HTTP $auth (expected 401)"
+            echo "- No cookies, request headers, redirect targets, tokens or response bodies captured"
+          } >> "$GITHUB_STEP_SUMMARY"
+          [[ "$health" == "200" && "$auth" == "401" ]] || {
+            echo "::error::Frontend/HTTP API proxy integration check failed."
+            exit 1
+          }
+          echo "All anonymous Web-to-API smoke gates passed."
+
+      - name: Inspect database firewall and pending GET job presence (read-only)
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SID" == "da3650a9-e291-43f1-ae4b-9dcc8ff84239" ]]
+          az postgres flexible-server show --subscription "$SID" -g "$RG" -n "$DB" \
+            --query '{name:name,state:state,version:version,publicAccess:network.publicNetworkAccess}' \
+            -o json --only-show-errors > "$RUNNER_TEMP/database-private.json"
+          az postgres flexible-server firewall-rule list --subscription "$SID" -g "$RG" -n "$DB" \
+            --only-show-errors -o json > "$RUNNER_TEMP/firewall-private.json" 2>/dev/null || echo '[]' > "$RUNNER_TEMP/firewall-private.json"
+          az containerapp job list --subscription "$SID" -g "$RG" \
+            --only-show-errors -o json > "$RUNNER_TEMP/target-jobs-private.json" 2>/dev/null || echo '[]' > "$RUNNER_TEMP/target-jobs-private.json"
+          python3 - <<'PY'
+          import json,os
+          root=os.environ["RUNNER_TEMP"]
+          db=json.load(open(os.path.join(root,"database-private.json")))
+          fw=json.load(open(os.path.join(root,"firewall-private.json")))
+          jobs=json.load(open(os.path.join(root,"target-jobs-private.json")))
+          fw=fw if isinstance(fw,list) else []
+          jobs=jobs if isinstance(jobs,list) else []
+          wide=any(f.get("startIpAddress")=="0.0.0.0" and f.get("endIpAddress")=="0.0.0.0" for f in fw if isinstance(f,dict))
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:
+              f.write("### Database and worker migration readiness (no writes)\n")
+              f.write("- Target PostgreSQL provisioned: "+str(db.get("name")=="psql-coderatsmig-c26m0911")+"\n")
+              f.write("- PostgreSQL state: "+str(db.get("state") if db.get("state") in ("Ready","Starting","Stopped","Updating") else "other")+"\n")
+              f.write("- PostgreSQL major version 16: "+str(str(db.get("version","")).startswith("16"))+"\n")
+              f.write("- Public network access: "+str(db.get("publicAccess") if db.get("publicAccess") in ("Enabled","Disabled") else "other")+"\n")
+              f.write("- Firewall rule count: "+str(len(fw))+"\n")
+              f.write("- Broad Azure-services firewall rule 0.0.0.0 present: "+str(wide)+" (security review required before data migration)\n")
+              f.write("- Container Apps Jobs currently registered in target RG: "+str(len(jobs))+"\n")
+              f.write("- Real database tables, rows, credentials and user data were NOT read\n")
+          PY
+          cat "$GITHUB_STEP_SUMMARY"
+
+      - name: Cleanup private transient files and Azure session
+        if: always()
+        shell: bash
+        run: |
+          rm -f "$RUNNER_TEMP"/app-*-private.json "$RUNNER_TEMP"/revisions-*-private.json \
+            "$RUNNER_TEMP"/database-private.json "$RUNNER_TEMP"/firewall-private.json \
+            "$RUNNER_TEMP"/target-jobs-private.json
+          az logout -o none >/dev/null 2>&1 || true

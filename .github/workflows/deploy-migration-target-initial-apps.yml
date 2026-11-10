@@ -75,34 +75,35 @@ jobs:
           echo "::add-mask::$key"
           echo "ARM_ACCESS_KEY=$key" >> "$GITHUB_ENV"
           unset key
-      - name: Setup Terraform for read-only secret output
-        uses: hashicorp/setup-terraform@v4
-        with:
-          terraform_version: "1.16.0"
-
-      - name: Extract only new target database password, never source credentials
+      - name: Read new target PostgreSQL secret from dedicated private state blob
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/target-state"
-          printf 'terraform { backend "azurerm" {} }\n' > "$RUNNER_TEMP/target-state/backend.tf"
-          cd "$RUNNER_TEMP/target-state"
-          terraform init -input=false -no-color \
-            -backend-config=resource_group_name=rg-coderats-migration-state \
-            -backend-config=storage_account_name=stcrtf8ff84239 \
-            -backend-config=container_name=tfstate \
-            -backend-config=key=coderats/migration-target.tfstate \
-            > "$RUNNER_TEMP/mirror-state-read.log" 2>&1 || {
-              echo "::error::Could not access the isolated migration target Terraform state."; exit 1;
+          # Read the exact target-only Terraform state through its private Azure
+          # storage blob. Never access a DEV/prod state or publish its contents.
+          az storage blob download --account-name stcrtf8ff84239 \
+            --account-key "$ARM_ACCESS_KEY" --container-name tfstate \
+            --name coderats/migration-target.tfstate \
+            --file "$RUNNER_TEMP/mirror-target-state.json" \
+            --only-show-errors -o none > "$RUNNER_TEMP/mirror-state-read.log" 2>&1 || {
+              echo "::error::Cannot read target database credential from isolated storage state."; exit 1;
             }
-          pass="$(terraform output -raw postgres_admin_password 2>/dev/null)" || exit 1
-          [[ "${#pass}" -ge 32 ]] || {
-            echo "::error::Target DB password is missing from new Terraform state."; exit 1;
+          pass="$(python3 - <<'PY'
+          import json,os,sys
+          p=json.load(open(os.path.join(os.environ['RUNNER_TEMP'],'mirror-target-state.json')))
+          out=p.get('outputs',{}).get('postgres_admin_password',{})
+          v=out.get('value','')
+          if not isinstance(v,str) or len(v)<32:
+              sys.exit(1)
+          sys.stdout.write(v)
+          PY
+          )" || {
+            echo "::error::Target PostgreSQL secret output is absent or invalid."; exit 1;
           }
           echo "::add-mask::$pass"
           echo "MIRROR_DB_PASSWORD=$pass" >> "$GITHUB_ENV"
           unset pass
-          echo "Generated destination database password recovered securely."
+          echo "New target database credential retrieved securely; original DEV not accessed."
 
       - name: Create dedicated ACR read-only token (no admin/push access)
         shell: bash
@@ -257,6 +258,6 @@ jobs:
         if: always()
         shell: bash
         run: |
-          rm -rf "$RUNNER_TEMP/target-state"
+          rm -f "$RUNNER_TEMP/mirror-target-state.json"
           rm -f "$RUNNER_TEMP"/mirror-*-deploy.log "$RUNNER_TEMP"/mirror-state-read.log
           az logout --output none >/dev/null 2>&1 || true

@@ -96,8 +96,36 @@ jobs:
               echo "- External TLS hostname+chain verification: UNAVAILABLE_FROM_RUNNER" >> "$GITHUB_STEP_SUMMARY"
             fi
           fi
+          # Azure's internal FQDN failed hostname verification. Check whether
+          # the same ingress certificate is instead valid for the provider-form
+          # API host, without revealing SAN details or response headers.
+          provider="$API.$default_domain"
+          alternate="$RUNNER_TEMP/api-tls-alternate-name-private.log"
+          if timeout 16s openssl s_client -connect "$fqdn:443" \
+              -servername "$provider" -verify_hostname "$provider" \
+              -verify_return_error -brief </dev/null > "$alternate" 2>&1; then
+            echo "- Provider-form hostname TLS validation with provider SNI: PASS" >> "$GITHUB_STEP_SUMMARY"
+          else
+            if grep -Eiq 'hostname mismatch|certificate verify failed:hostname' "$alternate"; then
+              echo "- Provider-form hostname TLS validation with provider SNI: HOSTNAME_MISMATCH" >> "$GITHUB_STEP_SUMMARY"
+            elif grep -Eiq 'unable to verify|unable to get local issuer|self.signed|verify error' "$alternate"; then
+              echo "- Provider-form hostname TLS validation with provider SNI: UNTRUSTED_ISSUER" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "- Provider-form hostname TLS validation with provider SNI: UNAVAILABLE_FROM_RUNNER" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          fi
+          # Check whether using internal routing SNI still presents the
+          # certificate valid for the provider hostname.
+          third="$RUNNER_TEMP/api-tls-mixed-sni-private.log"
+          if timeout 16s openssl s_client -connect "$fqdn:443" \
+              -servername "$fqdn" -verify_hostname "$provider" \
+              -verify_return_error -brief </dev/null > "$third" 2>&1; then
+            echo "- Internal routing SNI with provider hostname verification: PASS" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "- Internal routing SNI with provider hostname verification: NOT_VERIFIED" >> "$GITHUB_STEP_SUMMARY"
+          fi
           cat "$GITHUB_STEP_SUMMARY"
-          rm -f "$log" "$check"
+          rm -f "$log" "$check" "$alternate" "$third"
 
       - name: Remove private records and Azure session
         if: always()

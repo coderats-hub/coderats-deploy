@@ -114,16 +114,36 @@ jobs:
           echo "MIGRATION_WEB_ORIGIN=$web_origin" >> "$GITHUB_ENV"
           echo "Mirror WEB origin derived from new Azure Container Apps Environment."
 
+      - name: Create scoped ACR push token (one-day credential, not registry admin)
+        shell: bash
+        run: |
+          set -euo pipefail
+          token="coderats-mirror-build-push"
+          # Azure for Students forbids ACR Tasks, so build on GitHub runner and push.
+          # This token grants repository push/pull only, NOT registry administration.
+          if ! az acr token show --registry "$ACR" --name "$token" --subscription "$SID"             --query name -o tsv --only-show-errors >/dev/null 2>&1; then
+            az acr token create --registry "$ACR" --name "$token"               --scope-map _repositories_push --subscription "$SID" --only-show-errors -o none
+          fi
+          az acr token update --registry "$ACR" --name "$token" --status enabled             --subscription "$SID" --only-show-errors -o none
+          pass="$(az acr token credential generate --registry "$ACR" --name "$token"             --password1 --expiration-in-days 1 --subscription "$SID"             --query 'passwords[0].value' -o tsv --only-show-errors)"
+          [[ -n "$pass" ]] || exit 1
+          echo "::add-mask::$pass"
+          printf '%s' "$pass" | docker login "$ACR.azurecr.io"             --username "$token" --password-stdin > "$RUNNER_TEMP/acr-login.log" 2>&1 || {
+              echo "::error::Scoped ACR push login failed."; exit 1;
+            }
+          unset pass
+          echo "Scoped temporary ACR push authentication configured."
+
       - name: Build Web in isolated Azure registry
         shell: bash
         run: |
           set -euo pipefail
-          if ! az acr build --registry "$ACR" --subscription "$SID" \
-            --image "web-coderats-base:mirror-db35f8c2f5fb" \
-            --file Dockerfile \
+          image="$ACR.azurecr.io/web-coderats-base:mirror-db35f8c2f5fb"
+          if ! docker build -f web-src/Dockerfile \
             --build-arg "NEXT_PUBLIC_API_URL=$MIGRATION_WEB_ORIGIN" \
             --build-arg "API_PROXY_TARGET=http://ca-coderatsmig-api-c26m0911" \
-            web-src > "$RUNNER_TEMP/mirror-web-build.log" 2>&1; then
+            -t "$image" web-src > "$RUNNER_TEMP/mirror-web-build.log" 2>&1 ||
+            ! docker push "$image" >> "$RUNNER_TEMP/mirror-web-build.log" 2>&1; then
             if grep -qiE 'TasksOperationsNotAllowed|ACR Tasks.*disabled|run.*not supported' "$RUNNER_TEMP/mirror-web-build.log"; then
               echo "::error::Azure registry Tasks quick-build is unavailable for this subscription."
             elif grep -qiE 'Unauthorized|Forbidden|AuthorizationFailed|not authorized|DENIED' "$RUNNER_TEMP/mirror-web-build.log"; then
@@ -135,33 +155,31 @@ jobs:
             fi
             exit 1
           fi
-          echo "Mirror Web image built from pinned source."
+          echo "Mirror Web image built and pushed from pinned source."
 
       - name: Build API in isolated Azure registry
         shell: bash
         run: |
           set -euo pipefail
-          if ! az acr build --registry "$ACR" --subscription "$SID" \
-            --image "api-coderats-base:mirror-899b5e0fdd5d" \
-            --file Dockerfile \
-            api-src > "$RUNNER_TEMP/mirror-api-build.log" 2>&1; then
+          image="$ACR.azurecr.io/api-coderats-base:mirror-899b5e0fdd5d"
+          if ! docker build -f api-src/Dockerfile -t "$image" api-src > "$RUNNER_TEMP/mirror-api-build.log" 2>&1 ||
+            ! docker push "$image" >> "$RUNNER_TEMP/mirror-api-build.log" 2>&1; then
             echo "::error::New-subscription API container image build failed; no private build log published."
             exit 1
           fi
-          echo "Mirror API image built from pinned source."
+          echo "Mirror API image built and pushed from pinned source."
 
       - name: Build Grader in isolated Azure registry
         shell: bash
         run: |
           set -euo pipefail
-          if ! az acr build --registry "$ACR" --subscription "$SID" \
-            --image "api-grader-coderats:mirror-a126b16097ef" \
-            --file Dockerfile.cloud \
-            grader-src > "$RUNNER_TEMP/mirror-grader-build.log" 2>&1; then
+          image="$ACR.azurecr.io/api-grader-coderats:mirror-a126b16097ef"
+          if ! docker build -f grader-src/Dockerfile.cloud -t "$image" grader-src > "$RUNNER_TEMP/mirror-grader-build.log" 2>&1 ||
+            ! docker push "$image" >> "$RUNNER_TEMP/mirror-grader-build.log" 2>&1; then
             echo "::error::New-subscription Grader container image build failed; no private build log published."
             exit 1
           fi
-          echo "Mirror Grader image built from pinned source."
+          echo "Mirror Grader image built and pushed from pinned source."
 
       - name: Record successfully completed Azure Container Registry builds
         shell: bash
@@ -181,6 +199,8 @@ jobs:
         if: always()
         shell: bash
         run: |
+          docker logout crcoderatsmigc26m0911.azurecr.io >/dev/null 2>&1 || true
+          az acr token credential delete -r crcoderatsmigc26m0911 -n coderats-mirror-build-push --password1 --subscription "${SID}" --only-show-errors -o none >/dev/null 2>&1 || true
           rm -rf web-src api-src grader-src
           rm -f "$RUNNER_TEMP"/mirror-*-build.log
           az logout --output none >/dev/null 2>&1 || true

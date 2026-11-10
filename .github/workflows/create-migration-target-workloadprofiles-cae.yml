@@ -7,9 +7,6 @@ on:
         description: "Type CREATE_TRUE_STANDARD_CAE"
         required: true
         type: string
-  push:
-    branches: [main]
-    paths: [".github/workflows/create-migration-target-workloadprofiles-cae.yml"]
 
 permissions:
   contents: read
@@ -24,8 +21,7 @@ jobs:
     if: >-
       github.repository == 'coderats-hub/coderats-deploy' &&
       github.ref == 'refs/heads/main' &&
-      ((github.event_name == 'workflow_dispatch' && inputs.confirmation == 'CREATE_TRUE_STANDARD_CAE') ||
-       (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'ci(migration): retry verified workloadprofiles with azure monitor once')))
+      github.event_name == 'workflow_dispatch' && inputs.confirmation == 'CREATE_TRUE_STANDARD_CAE'
     runs-on: ubuntu-latest
     environment: migration-target
     timeout-minutes: 40

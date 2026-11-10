@@ -24,7 +24,7 @@ jobs:
       github.repository == 'coderats-hub/coderats-deploy' &&
       github.ref == 'refs/heads/main' &&
       ((github.event_name == 'workflow_dispatch' && inputs.confirmation == 'MOUNT_TARGET_MEDIA') ||
-       (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'ci(migration): diagnose target media registration once')))
+       (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'ci(migration): classify isolated target storage failure once')))
     runs-on: ubuntu-latest
     environment: migration-target
     timeout-minutes: 25
@@ -115,30 +115,30 @@ jobs:
                 --azure-file-account-name "$STORAGE" --azure-file-account-key "$key" --azure-file-share-name "$SHARE" \
                 --only-show-errors -o none > "$RUNNER_TEMP/storage-set-private.log" 2>&1; then
                 classification="$(python3 - <<'PY'
-              import os,re
-              p=os.path.join(os.environ['RUNNER_TEMP'],'storage-set-private.log')
-              try:
-                  raw=open(p,encoding='utf-8',errors='replace').read()[-20000:]
-              except OSError:
-                  raw=''
-              codes=['AuthorizationFailed','LinkedAuthorizationFailed','Forbidden','InsufficientPrivileges',
-                     'RequestDisallowedByPolicy','InvalidTemplate','BadRequest','Conflict','TooManyRequests',
-                     'MissingSubscriptionRegistration','NoRegisteredProviderFound','SubscriptionNotRegistered',
-                     'StorageAccountNotFound','StorageAccountIsDisabled','FileShareNotFound','ShareNotFound',
-                     'StorageAccountKeyInvalid','AuthenticationFailed','InvalidRequestContent','InvalidResourceType',
-                     'ManagedEnvironmentNotFound','ManagedEnvironmentStorageNotFound','ResourceNotFound',
-                     'InternalServerError','ServiceUnavailable','OperationNotAllowed','CannotDelete',
-                     'NetworkAclsValidationFailure','NetworkAccessDenied','ResourceGroupNotFound']
-              code=next((x for x in codes if re.search(r'(?<![A-Za-z])'+re.escape(x)+r'(?![A-Za-z])',raw,re.I)),None)
-              if not code and re.search(r'unrecognized arguments|unrecognized command|not recognized',raw,re.I):
-                  code='AzureCliArgumentError'
-              if not code and re.search(r'Operation returned an invalid status',raw,re.I):
-                  code='AzureArmInvalidStatus'
-              if not code:
-                  match=re.search(r'(?<!\d)(400|401|403|404|409|429|500|502|503)(?!\d)',raw)
-                  code='HTTP'+match.group(1) if match else 'Unclassified'
-              print(code)
-              PY
+          import os,re
+          p=os.path.join(os.environ['RUNNER_TEMP'],'storage-set-private.log')
+          try:
+              raw=open(p,encoding='utf-8',errors='replace').read()[-20000:]
+          except OSError:
+              raw=''
+          codes=['AuthorizationFailed','LinkedAuthorizationFailed','Forbidden','InsufficientPrivileges',
+                 'RequestDisallowedByPolicy','InvalidTemplate','BadRequest','Conflict','TooManyRequests',
+                 'MissingSubscriptionRegistration','NoRegisteredProviderFound','SubscriptionNotRegistered',
+                 'StorageAccountNotFound','StorageAccountIsDisabled','FileShareNotFound','ShareNotFound',
+                 'StorageAccountKeyInvalid','AuthenticationFailed','InvalidRequestContent','InvalidResourceType',
+                 'ManagedEnvironmentNotFound','ManagedEnvironmentStorageNotFound','ResourceNotFound',
+                 'InternalServerError','ServiceUnavailable','OperationNotAllowed','CannotDelete',
+                 'NetworkAclsValidationFailure','NetworkAccessDenied','ResourceGroupNotFound']
+          code=next((x for x in codes if re.search(r'(?<![A-Za-z])'+re.escape(x)+r'(?![A-Za-z])',raw,re.I)),None)
+          if not code and re.search(r'unrecognized arguments|unrecognized command|not recognized',raw,re.I):
+              code='AzureCliArgumentError'
+          if not code and re.search(r'Operation returned an invalid status',raw,re.I):
+              code='AzureArmInvalidStatus'
+          if not code:
+              match=re.search(r'(?<!\d)(400|401|403|404|409|429|500|502|503)(?!\d)',raw)
+              code='HTTP'+match.group(1) if match else 'Unclassified'
+          print(code)
+          PY
               )"
                 echo "::error::Target media binding failed. Safe Azure classification: $classification"
                 exit 1

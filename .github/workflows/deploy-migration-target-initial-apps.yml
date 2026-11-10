@@ -133,7 +133,7 @@ jobs:
           # Initial boot only. Before copying production personal data,
           # private networking / exact egress restriction must be reviewed.
           az postgres flexible-server firewall-rule create \
-            --subscription "$SID" -g "$RG" -n "$DB" \
+            --subscription "$SID" -g "$RG" --server-name "$DB" \
             --rule-name allow-staging-azure-service \
             --start-ip-address 0.0.0.0 --end-ip-address 0.0.0.0 \
             --only-show-errors -o none

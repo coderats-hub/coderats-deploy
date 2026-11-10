@@ -547,6 +547,42 @@ jobs:
           done
           cat "$GITHUB_STEP_SUMMARY"
           rm -f "$RUNNER_TEMP/isolated-proxy-"*.log
+      - name: Verify newly activated Web DNS-fix image, API path and runtime proxy (read-only)
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SID" == "da3650a9-e291-43f1-ae4b-9dcc8ff84239" ]]
+          [[ "$(az account show --query id -o tsv)" == "$SID" ]]
+          web_fqdn="$(az containerapp show --subscription "$SID" -g "$RG" -n "$WEB" --query properties.configuration.ingress.fqdn -o tsv --only-show-errors)"
+          api_fqdn="$(az containerapp show --subscription "$SID" -g "$RG" -n "$API" --query properties.configuration.ingress.fqdn -o tsv --only-show-errors)"
+          [[ "$web_fqdn" == "$WEB".*.brazilsouth.azurecontainerapps.io ]]
+          [[ "$api_fqdn" == "$API".*.brazilsouth.azurecontainerapps.io ]]
+          az containerapp show --subscription "$SID" -g "$RG" -n "$WEB" \
+            --query '{image:properties.template.containers[0].image,env:properties.template.containers[0].env,provisioning:properties.provisioningState}' \
+            -o json --only-show-errors > "$RUNNER_TEMP/mirror-web-proxy-runtime-private.json"
+          API_FQDN="$api_fqdn" python3 - <<'PY'
+          import json,os
+          v=json.load(open(os.path.join(os.environ["RUNNER_TEMP"],"mirror-web-proxy-runtime-private.json")))
+          image=v.get("image")
+          expected="crcoderatsmigc26m0911.azurecr.io/web-coderats-base:mirror-dnsfix-db35f8c2f5fb"
+          env=v.get("env") or []
+          target=next((e.get("value") for e in env if isinstance(e,dict) and e.get("name")=="API_PROXY_TARGET"),None)
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:
+              f.write("### Web DNS fix after staged Azure image update\n")
+              f.write("- Web container image is DNS-fix version: "+str(image==expected)+"\n")
+              f.write("- Web provisioning: "+str(v.get("provisioning") if v.get("provisioning") in ("Succeeded","Failed","InProgress") else "other")+"\n")
+              f.write("- Runtime WebSocket API_PROXY_TARGET uses current internal API FQDN: "+str(target=="http://"+os.environ["API_FQDN"])+"\n")
+              f.write("- Runtime proxy value and container environment are not printed\n")
+          PY
+          for path in / /health /api/v1/auth/me; do
+            status="$(curl -sS -L -o /dev/null --connect-timeout 7 --max-time 20 -w '%{http_code}' \
+              "https://$web_fqdn$path" 2>/dev/null || true)"
+            [[ "$status" =~ ^[0-9]{3}$ ]] || status="unavailable"
+            echo "- Web $path: HTTP $status" >> "$GITHUB_STEP_SUMMARY"
+          done
+          cat "$GITHUB_STEP_SUMMARY"
+          rm -f "$RUNNER_TEMP/mirror-web-proxy-runtime-private.json"
+
       - name: Print safe summary
         if: always()
         shell: bash

@@ -1,5 +1,5 @@
 name: Recover original CodeRats Azure Files media to isolated target once
-# Disabled Azure source may omit stopped container metadata: require exactly one persisted AzureFile volume.
+# Recover media only from a uniquely identified existing source AzureFiles environment binding.
 on:
   workflow_dispatch:
     inputs:

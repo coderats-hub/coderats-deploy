@@ -1,4 +1,5 @@
 name: Recover original CodeRats Azure Files media to isolated target once
+# Source diagnostics print allowlisted boolean stages only, never object names or credentials.
 on:
   workflow_dispatch:
     inputs:

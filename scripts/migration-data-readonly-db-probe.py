@@ -88,6 +88,7 @@ def main():
         expected=15 if role=="source" else 16
         print("MIGRATION_PROBE_"+role.upper()+"_"+kind.upper()+"_DB_READ_ONLY_CONNECTED=True")
         print("MIGRATION_PROBE_"+role.upper()+"_"+kind.upper()+"_PG_MAJOR_EXPECTED="+str(major==expected))
+        print("MIGRATION_PROBE_"+role.upper()+"_"+kind.upper()+"_PG_MAJOR="+str(major))
         print("MIGRATION_PROBE_"+role.upper()+"_"+kind.upper()+"_TABLES_PRESENT="+str(table_count>0))
         results.append((kind,major,table_count))
     with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as out:

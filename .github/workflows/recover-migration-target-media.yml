@@ -7,10 +7,6 @@ on:
         description: "Type COPY_LEGACY_MEDIA (origin read only, target Files create only)"
         required: true
         type: string
-  push:
-    branches: [main]
-    paths:
-      - ".github/workflows/recover-migration-target-media.yml"
 
 permissions:
   contents: read
@@ -25,8 +21,7 @@ jobs:
     if: >-
       github.repository == 'coderats-hub/coderats-deploy' &&
       github.ref == 'refs/heads/main' &&
-      ((github.event_name == 'workflow_dispatch' && inputs.confirmation == 'COPY_LEGACY_MEDIA') ||
-       (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'ci(migration): recover old Azure Files once')))
+      github.event_name == 'workflow_dispatch' && inputs.confirmation == 'COPY_LEGACY_MEDIA'
     environment: dev
     runs-on: ubuntu-latest
     timeout-minutes: 10

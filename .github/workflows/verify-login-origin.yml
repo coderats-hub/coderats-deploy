@@ -35,3 +35,5 @@ jobs:
           print("Public OAuth redirect and first-party session cookie verified")
           PY
           echo "First-party API proxy and GitHub OAuth state: PASS" >> "$GITHUB_STEP_SUMMARY"
+
+# 2026-11-11: Verify first-party session after official Azure Web+API migration.

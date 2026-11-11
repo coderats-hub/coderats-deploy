@@ -1,5 +1,5 @@
 name: Recover original CodeRats Azure Files media to isolated target once
-# Recover media only from a uniquely identified existing source AzureFiles environment binding.
+# Recover media via read-only shared key, or Azure Files OAuth backup-intent if source listKeys is disabled.
 on:
   workflow_dispatch:
     inputs:

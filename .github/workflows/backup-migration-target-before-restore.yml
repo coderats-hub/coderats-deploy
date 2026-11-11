@@ -1,0 +1,54 @@
+name: Back up isolated migration-target databases privately before restore
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "Type BACKUP_TARGET_BEFORE_RESTORE (target backup only; no source or restore)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: coderats-migration-target-rollback-backup
+  cancel-in-progress: false
+
+jobs:
+  target-backup:
+    if: >-
+      github.repository == 'coderats-hub/coderats-deploy' &&
+      github.ref == 'refs/heads/main' &&
+      inputs.confirmation == 'BACKUP_TARGET_BEFORE_RESTORE'
+    environment: migration-target
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      MIGRATION_RESOURCE_GROUP: rg-coderats-migration-c26m0911
+      MIGRATION_STAGE: TARGET_BACKUP_ONLY
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Authenticate exclusively to isolated target
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Create and verify private rollback backups without changing PostgreSQL
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          python3 -m py_compile scripts/migration-backup-target-db.py scripts/migration-data-readonly-db-probe.py
+          python3 scripts/migration-backup-target-db.py
+      - name: Erase ephemeral archives and sign out
+        if: always()
+        shell: bash
+        run: |
+          rm -rf "$RUNNER_TEMP/private-target-backups"
+          az logout -o none >/dev/null 2>&1 || true

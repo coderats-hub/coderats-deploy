@@ -1,0 +1,207 @@
+name: Recover original CodeRats Azure Files media to isolated target once
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "Type COPY_LEGACY_MEDIA (origin read only, target Files create only)"
+        required: true
+        type: string
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/recover-migration-target-media.yml"
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: coderats-recover-legacy-media-to-isolated-target
+  cancel-in-progress: false
+
+jobs:
+  original-certificate:
+    if: >-
+      github.repository == 'coderats-hub/coderats-deploy' &&
+      github.ref == 'refs/heads/main' &&
+      ((github.event_name == 'workflow_dispatch' && inputs.confirmation == 'COPY_LEGACY_MEDIA') ||
+       (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'ci(migration): recover old Azure Files once')))
+    environment: dev
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      certificate: ${{ steps.cert.outputs.certificate }}
+    steps:
+      - name: Generate ephemeral PUBLIC certificate from existing original GitHub App key
+        id: cert
+        shell: bash
+        env:
+          ORIGINAL_APP_KEY: ${{ secrets.CODERATS_DEPLOY_APP_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          [[ -n "${ORIGINAL_APP_KEY:-}" ]] || exit 1
+          printf '%s\n' "$ORIGINAL_APP_KEY" > "$RUNNER_TEMP/media-dev-app-key.pem"
+          openssl pkey -in "$RUNNER_TEMP/media-dev-app-key.pem" -noout >/dev/null 2>&1
+          openssl req -new -x509 -sha256 -days 1 -key "$RUNNER_TEMP/media-dev-app-key.pem" \
+            -subj "/CN=CodeRats source media encrypted handoff" -out "$RUNNER_TEMP/media-source-cert.pem" \
+            >/dev/null 2>&1
+          echo "certificate=$(base64 -w0 < "$RUNNER_TEMP/media-source-cert.pem")" >> "$GITHUB_OUTPUT"
+          echo 'A temporary public certificate was issued. The DEV private key was not published.'
+      - name: Erase original key files from runner
+        if: always()
+        run: rm -f "$RUNNER_TEMP/media-dev-app-key.pem" "$RUNNER_TEMP/media-source-cert.pem"
+
+  target-capability:
+    needs: original-certificate
+    environment: migration-target
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      encrypted_capability: ${{ steps.sas.outputs.encrypted_capability }}
+    env:
+      SID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      TID: ${{ secrets.AZURE_TENANT_ID }}
+      RG: rg-coderats-migration-c26m0911
+      STORAGE: stcoderatsmigc26m0911
+      SHARE: coderats-media
+      CERT_B64: ${{ needs.original-certificate.outputs.certificate }}
+    steps:
+      - name: Sign into destination Azure only
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Prepare private share scoped no-delete capability encrypted for source job
+        id: sas
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          [[ "$SID" == 'da3650a9-e291-43f1-ae4b-9dcc8ff84239' ]]
+          [[ "$TID" == '1cf74c7e-fcd9-46f7-8a9d-e699d3529003' ]]
+          [[ "$(az account show --query id -o tsv)" == "$SID" ]]
+          [[ "$(az account show --query tenantId -o tsv)" == "$TID" ]]
+          [[ "$(az storage share-rm show --subscription "$SID" -g "$RG" \
+             --storage-account "$STORAGE" --name "$SHARE" --only-show-errors --query name -o tsv 2>/dev/null)" == "$SHARE" ]]
+          printf '%s' "$CERT_B64" | base64 -d > "$RUNNER_TEMP/media-source-cert.pem"
+          openssl x509 -in "$RUNNER_TEMP/media-source-cert.pem" -noout >/dev/null 2>&1
+          key="$(az storage account keys list --subscription "$SID" -g "$RG" -n "$STORAGE" \
+              --query '[0].value' --only-show-errors -o tsv 2>/dev/null)"
+          [[ -n "$key" ]] || { echo "::error::Destination storage key unavailable."; exit 1; }
+          echo "::add-mask::$key"
+          expiry="$(date -u -d '+3 hours' '+%Y-%m-%dT%H:%MZ')"
+          sas="$(az storage share generate-sas --account-name "$STORAGE" --account-key "$key" \
+            --name "$SHARE" --permissions rclw --https-only --expiry "$expiry" \
+            --only-show-errors -o tsv 2>/dev/null)"
+          [[ -n "$sas" ]] || { echo "::error::Destination Files create/list/write SAS unavailable."; exit 1; }
+          echo "::add-mask::$sas"
+          printf 'https://%s.file.core.windows.net/%s?%s' "$STORAGE" "$SHARE" "$sas" > "$RUNNER_TEMP/media-target-uri.txt"
+          openssl cms -encrypt -binary -aes256 -in "$RUNNER_TEMP/media-target-uri.txt" \
+            -out "$RUNNER_TEMP/media-target-uri.cms" -outform DER "$RUNNER_TEMP/media-source-cert.pem" \
+            >/dev/null 2>&1 || { echo "::error::Encryption of private Files handoff failed."; exit 1; }
+          echo "encrypted_capability=$(base64 -w0 < "$RUNNER_TEMP/media-target-uri.cms")" >> "$GITHUB_OUTPUT"
+          echo 'Created a temporary target Files capability with no delete permission; only ciphertext handed to original job.'
+      - name: Erase target credentials from runner
+        if: always()
+        run: |
+          rm -f "$RUNNER_TEMP/media-target-uri.txt" "$RUNNER_TEMP/media-target-uri.cms" "$RUNNER_TEMP/media-source-cert.pem"
+          az logout -o none >/dev/null 2>&1 || true
+
+  source-copy:
+    needs: [original-certificate, target-capability]
+    environment: dev
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    env:
+      SOURCE_SID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      SOURCE_APP_KEY: ${{ secrets.CODERATS_DEPLOY_APP_PRIVATE_KEY }}
+      ENCRYPTED_CAPABILITY: ${{ needs.target-capability.outputs.encrypted_capability }}
+      CERT_B64: ${{ needs.original-certificate.outputs.certificate }}
+      MIGRATION_MEDIA_STAGE: COPY_SOURCE_TO_TARGET_ONLY
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Authenticate exclusively to original DEV subscription for read-only source files
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Decrypt target write-only capability privately and copy recoverable images
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          [[ -n "$SOURCE_SID" && "$SOURCE_SID" != 'da3650a9-e291-43f1-ae4b-9dcc8ff84239' ]]
+          [[ "$(az account show --query id -o tsv)" == "$SOURCE_SID" ]]
+          [[ -n "$SOURCE_APP_KEY" && -n "$CERT_B64" && -n "$ENCRYPTED_CAPABILITY" ]]
+          printf '%s\n' "$SOURCE_APP_KEY" > "$RUNNER_TEMP/media-app-key.pem"
+          printf '%s' "$CERT_B64" | base64 -d > "$RUNNER_TEMP/media-source-cert.pem"
+          printf '%s' "$ENCRYPTED_CAPABILITY" | base64 -d > "$RUNNER_TEMP/media-target-capability.cms"
+          openssl cms -decrypt -inform DER -in "$RUNNER_TEMP/media-target-capability.cms" \
+            -recip "$RUNNER_TEMP/media-source-cert.pem" -inkey "$RUNNER_TEMP/media-app-key.pem" \
+            -out "$RUNNER_TEMP/private-media-target-uri.txt" >/dev/null 2>&1 || {
+              echo "::error::Private destination Files handoff decryption failed."; exit 1;
+            }
+          python3 -m py_compile scripts/migration-recover-azure-files.py
+          python3 scripts/migration-recover-azure-files.py
+      - name: Purge ephemeral source share credentials and AzCopy logs
+        if: always()
+        shell: bash
+        run: |
+          rm -rf "$RUNNER_TEMP/private-media-recovery"
+          rm -f "$RUNNER_TEMP/media-app-key.pem" "$RUNNER_TEMP/media-source-cert.pem" \
+                "$RUNNER_TEMP/media-target-capability.cms" "$RUNNER_TEMP/private-media-target-uri.txt"
+          az logout -o none >/dev/null 2>&1 || true
+
+  verify-target:
+    needs: source-copy
+    environment: migration-target
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      SID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      RG: rg-coderats-migration-c26m0911
+      STORAGE: stcoderatsmigc26m0911
+      SHARE: coderats-media
+    steps:
+      - name: Authenticate to target to verify media categories without reading images
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Verify copied file directory layout and destination share identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SID" == 'da3650a9-e291-43f1-ae4b-9dcc8ff84239' ]]
+          [[ "$(az account show --query id -o tsv)" == "$SID" ]]
+          [[ "$(az storage share-rm show --subscription "$SID" -g "$RG" \
+             --storage-account "$STORAGE" --name "$SHARE" --only-show-errors --query name -o tsv 2>/dev/null)" == "$SHARE" ]]
+          key="$(az storage account keys list --subscription "$SID" -g "$RG" -n "$STORAGE" \
+             --query '[0].value' --only-show-errors -o tsv 2>/dev/null)"
+          [[ -n "$key" ]] || exit 1
+          echo "::add-mask::$key"
+          az storage file list --account-name "$STORAGE" --account-key "$key" --share-name "$SHARE" \
+            --only-show-errors -o json > "$RUNNER_TEMP/media-final-root.json" 2>/dev/null || exit 1
+          python3 - <<'PY'
+          import json,os,sys
+          rows=json.load(open(os.path.join(os.environ['RUNNER_TEMP'],'media-final-root.json')))
+          names={str(x.get('name')) for x in rows if isinstance(x,dict)} if isinstance(rows,list) else set()
+          good=bool(names & {'posts','colonies','member-banners','organizations','organization-banners'})
+          print('MEDIA_TARGET_ROOT_HAS_EXPECTED_CATEGORIES='+str(good).lower())
+          if not good:sys.exit('::error::Expected source media directories not found on destination.')
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as s:
+              s.write('### Original media recovery verified\n')
+              s.write('- Target Azure Files media directory layout exists; source copy completed without overwrites\n')
+              s.write('- No public artifacts, media filenames, source writes or DNS changes\n')
+          PY
+      - name: Purge target data and sign out
+        if: always()
+        run: |
+          rm -f "$RUNNER_TEMP/media-final-root.json"
+          az logout -o none >/dev/null 2>&1 || true

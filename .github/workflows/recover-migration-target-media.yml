@@ -1,5 +1,5 @@
 name: Recover original CodeRats Azure Files media to isolated target once
-# Source diagnostics print allowlisted boolean stages only, never object names or credentials.
+# Source discovery supports a unique AzureFile mount across multiple original API containers; no names printed.
 on:
   workflow_dispatch:
     inputs:

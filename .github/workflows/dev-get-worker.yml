@@ -20,7 +20,8 @@ concurrency:
 
 jobs:
   release-worker:
-    if: github.repository == 'coderats-hub/coderats-base-infra' && github.ref == 'refs/heads/main'
+    # Retired: do not run the old GET job. Destination GET remains inert.
+    if: false
     runs-on: [self-hosted, linux, x64, coderats-deploy]
     environment: dev
     timeout-minutes: 20

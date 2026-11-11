@@ -250,7 +250,7 @@ jobs:
               echo "::error::Private backup checksum or length verification failed."; exit 1;
             }
             if ! docker run --rm -v "$RUNNER_TEMP/verify-private-archives:/backup:ro" \
-                 postgres:18-alpine pg_restore --list "/backup/$kind.dump" \
+                 postgres:16-alpine pg_restore --list "/backup/$kind.dump" \
                  >/dev/null 2>&1; then
               echo "::error::Private PostgreSQL archive content validation failed."; exit 1;
             fi

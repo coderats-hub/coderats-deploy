@@ -10,6 +10,7 @@ on:
     branches: [main]
     paths:
       - ".github/workflows/probe-migration-db-readonly.yml"
+      - "scripts/migration-data-readonly-db-probe.py"
 
 permissions:
   contents: read

@@ -76,5 +76,30 @@ compile_check = subprocess.run(["python3", "-m", "py_compile", str(target_python
                                capture_output=True, text=True, check=False)
 assert compile_check.returncode == 0, "Target backup Python syntax invalid"
 
+# One-time source-read-only => isolated Azure Files non-destructive media recovery.
+media = workflows / "recover-migration-target-media.yml"
+media_text = media.read_text()
+media_workflow = yaml.safe_load(media_text)
+events = media_workflow.get("on", media_workflow.get(True, {}))
+assert events == {
+    "workflow_dispatch": {"inputs": {"confirmation": {
+        "description": "Type COPY_LEGACY_MEDIA (origin read only, target Files create only)",
+        "required": True, "type": "string"
+    }}},
+    "push": {"branches": ["main"], "paths": [".github/workflows/recover-migration-target-media.yml"]}
+}, "Unexpected media recovery trigger"
+assert "github.ref == 'refs/heads/main'" in media_text
+assert "startsWith(github.event.head_commit.message, 'ci(migration): recover old Azure Files once')" in media_text
+assert 'environment: migration-target' in media_text and 'environment: dev' in media_text
+for job in media_workflow["jobs"].values():
+    for step in job.get("steps", []):
+        script = step.get("run")
+        if isinstance(script, str):
+            check = subprocess.run(["bash", "-n"], input=script, text=True, capture_output=True)
+            assert check.returncode == 0, "Media recovery shell syntax invalid"
+media_python = root / "scripts" / "migration-recover-azure-files.py"
+assert media_python.exists()
+compile(media_python.read_text(), str(media_python), "exec")
+
 print("PASS: public dispatcher has protected main/DEV-only entrypoint, private App checkout, "
       "DEV guards and public hosted-runner builds; all Bash scripts parse.")

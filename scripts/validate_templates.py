@@ -85,11 +85,10 @@ assert events == {
     "workflow_dispatch": {"inputs": {"confirmation": {
         "description": "Type COPY_LEGACY_MEDIA (origin read only, target Files create only)",
         "required": True, "type": "string"
-    }}},
-    "push": {"branches": ["main"], "paths": [".github/workflows/recover-migration-target-media.yml"]}
-}, "Unexpected media recovery trigger"
+    }}}
+}, "Media recovery must remain manual-only"
 assert "github.ref == 'refs/heads/main'" in media_text
-assert "startsWith(github.event.head_commit.message, 'ci(migration): recover old Azure Files once')" in media_text
+assert "github.event_name == 'workflow_dispatch' && inputs.confirmation == 'COPY_LEGACY_MEDIA'" in media_text
 assert 'environment: migration-target' in media_text and 'environment: dev' in media_text
 for job in media_workflow["jobs"].values():
     for step in job.get("steps", []):

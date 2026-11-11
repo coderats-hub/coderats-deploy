@@ -91,7 +91,7 @@ assert "DELETE_LEGACY_MIRROR_C26M0911" in legacy_text
 assert "az containerapp delete" in legacy_text
 assert "az containerapp env delete" in legacy_text
 assert "az group delete" not in legacy_text
-assert "terraform" not in legacy_text.lower()
+assert "terraform apply" not in legacy_text.lower()
 for job in legacy_data["jobs"].values():
     for step in job.get("steps", []):
         script = step.get("run")

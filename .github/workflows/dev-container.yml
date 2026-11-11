@@ -40,9 +40,9 @@ concurrency:
 
 jobs:
   validate-and-release:
-    if: >-
-      (inputs.service == 'web' && github.repository == 'coderats-hub/web-coderats-base' && github.ref == 'refs/heads/develop') ||
-      (inputs.service == 'api' && github.repository == 'coderats-hub/api-coderats-base' && github.ref == 'refs/heads/develop')
+    # Retired after DNS cutover: never publish to the exhausted East US subscription.
+    # Official Web/API releases use deploy-private-dev.yml in migration-target.
+    if: false
     # Only self-hosted runners scoped to the PRIVATE caller. Never attach
     # CodeRats private-source runners to the public template repository.
     runs-on: [self-hosted, linux, x64, coderats-deploy]

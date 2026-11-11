@@ -1,3 +1,4 @@
+# Post-snapshot import smoke probe (read-only, no source or target modifications).
 name: Probe source and target PostgreSQL data access (read-only)
 on:
   workflow_dispatch:

@@ -6,9 +6,6 @@ on:
         description: "Type BACKUP_TARGET_BEFORE_RESTORE (target backup only; no source or restore)"
         required: true
         type: string
-  push:
-    branches: [main]
-    paths: [".github/workflows/backup-migration-target-before-restore.yml"]
 
 permissions:
   contents: read
@@ -23,10 +20,7 @@ jobs:
     if: >-
       github.repository == 'coderats-hub/coderats-deploy' &&
       github.ref == 'refs/heads/main' &&
-      (
-        (github.event_name == 'workflow_dispatch' && inputs.confirmation == 'BACKUP_TARGET_BEFORE_RESTORE') ||
-        (github.event_name == 'push' && github.event.head_commit.message == 'ci(migration): one-time target pre-restore backup')
-      )
+      github.event_name == 'workflow_dispatch' && inputs.confirmation == 'BACKUP_TARGET_BEFORE_RESTORE'
     environment: migration-target
     runs-on: ubuntu-latest
     timeout-minutes: 120

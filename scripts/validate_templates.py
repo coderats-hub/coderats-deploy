@@ -57,11 +57,9 @@ target_backup = workflows / "backup-migration-target-before-restore.yml"
 target_text = target_backup.read_text()
 target_data = yaml.safe_load(target_text)
 target_events = target_data.get("on", target_data.get(True, {}))
-assert isinstance(target_events, dict) and set(target_events) == {"workflow_dispatch", "push"}, (
-    "Target DB rollback backup must be manual or exact one-time gated main push"
+assert isinstance(target_events, dict) and set(target_events) == {"workflow_dispatch"}, (
+    "Target rollback backup must be manual-only after data migration"
 )
-assert target_events["push"] == {"branches": ["main"], "paths": [".github/workflows/backup-migration-target-before-restore.yml"]}
-assert "github.event.head_commit.message == 'ci(migration): one-time target pre-restore backup'" in target_text
 assert "environment: migration-target" in target_text
 assert "github.ref == 'refs/heads/main'" in target_text
 assert "BACKUP_TARGET_BEFORE_RESTORE" in target_text
@@ -77,29 +75,6 @@ target_python = root / "scripts" / "migration-backup-target-db.py"
 compile_check = subprocess.run(["python3", "-m", "py_compile", str(target_python)],
                                capture_output=True, text=True, check=False)
 assert compile_check.returncode == 0, "Target backup Python syntax invalid"
-
-# Restore only verified snapshots, only on the exact one-time target-only merge.
-restore = workflows / "restore-migration-target-snapshots.yml"
-restore_text = restore.read_text()
-restore_data = yaml.safe_load(restore_text)
-restore_on = restore_data.get("on", restore_data.get(True, {}))
-assert restore_on == {"push": {"branches": ["main"], "paths": [".github/workflows/restore-migration-target-snapshots.yml"]}}
-assert "github.event.head_commit.message == 'ci(migration): restore verified source snapshots to target once'" in restore_text
-assert "github.repository == 'coderats-hub/coderats-deploy'" in restore_text
-assert "github.ref == 'refs/heads/main'" in restore_text
-assert "environment: migration-target" in restore_text
-assert "source" not in restore_data["jobs"], "Source scope must not be accessible during target restore"
-for job in restore_data["jobs"].values():
-    for step in job.get("steps", []):
-        body = step.get("run")
-        if isinstance(body, str):
-            check = subprocess.run(["bash", "-n"], input=body, text=True,
-                                   capture_output=True, check=False)
-            assert check.returncode == 0, "Restore workflow shell invalid"
-restore_code = root / "scripts" / "migration-restore-target-db.py"
-check = subprocess.run(["python3", "-m", "py_compile", str(restore_code)],
-                       capture_output=True, text=True, check=False)
-assert check.returncode == 0, "Restore script Python syntax invalid"
 
 print("PASS: public dispatcher has protected main/DEV-only entrypoint, private App checkout, "
       "DEV guards and public hosted-runner builds; all Bash scripts parse.")

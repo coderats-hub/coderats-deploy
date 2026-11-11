@@ -1,0 +1,123 @@
+name: Probe source and target PostgreSQL data access (read-only)
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "Type PROBE_MIGRATION_DB (read-only PostgreSQL SELECTs only)"
+        required: true
+        type: string
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/probe-migration-db-readonly.yml"
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: coderats-migration-postgres-readonly-probe
+  cancel-in-progress: false
+
+jobs:
+  source:
+    if: >-
+      github.repository == 'coderats-hub/coderats-deploy' &&
+      github.ref == 'refs/heads/main' &&
+      (
+        (github.event_name == 'workflow_dispatch' && inputs.confirmation == 'PROBE_MIGRATION_DB') ||
+        (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'ci(migration): probe PostgreSQL data access'))
+      )
+    environment: dev
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      MIGRATION_ROLE: source
+      MIGRATION_RESOURCE_GROUP: rg-coderats-base-dev
+      MIGRATION_API: ca-coderats-base-api-dev
+      MIGRATION_GRADER: ca-coderats-grader-dev
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Authenticate to the old subscription for read-only SELECTs
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Verify strictly original subscription
+        run: |
+          set -euo pipefail
+          [[ -n "$AZURE_SUBSCRIPTION_ID" && "$AZURE_SUBSCRIPTION_ID" != "da3650a9-e291-43f1-ae4b-9dcc8ff84239" ]] || exit 1
+          [[ "$(az account show --query id -o tsv)" == "$AZURE_SUBSCRIPTION_ID" ]] || exit 1
+      - name: Prepare ephemeral PostgreSQL client without verbose output
+        run: |
+          set -euo pipefail
+          if ! (sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client) > "$RUNNER_TEMP/setup.log" 2>&1; then
+            echo "::error::PostgreSQL client setup unavailable; details suppressed."
+            exit 1
+          fi
+          python3 -m py_compile scripts/migration-data-readonly-db-probe.py
+      - name: Probe existing application and grader databases without reading row contents
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/migration-data-readonly-db-probe.py
+      - name: Purge transient files and Azure session
+        if: always()
+        run: |
+          rm -f "$RUNNER_TEMP/setup.log"
+          az logout -o none >/dev/null 2>&1 || true
+
+  destination:
+    if: >-
+      github.repository == 'coderats-hub/coderats-deploy' &&
+      github.ref == 'refs/heads/main' &&
+      (
+        (github.event_name == 'workflow_dispatch' && inputs.confirmation == 'PROBE_MIGRATION_DB') ||
+        (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'ci(migration): probe PostgreSQL data access'))
+      )
+    environment: migration-target
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      MIGRATION_ROLE: target
+      MIGRATION_RESOURCE_GROUP: rg-coderats-migration-c26m0911
+      MIGRATION_API: ca-cdmstd-api-c26m0911
+      MIGRATION_GRADER: ca-cdmstd-grader-c26m0911
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Authenticate to destination subscription for read-only SELECTs
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Verify exact destination subscription
+        run: |
+          set -euo pipefail
+          [[ "$AZURE_SUBSCRIPTION_ID" == "da3650a9-e291-43f1-ae4b-9dcc8ff84239" ]] || exit 1
+          [[ "$(az account show --query id -o tsv)" == "$AZURE_SUBSCRIPTION_ID" ]] || exit 1
+      - name: Prepare ephemeral PostgreSQL client without verbose output
+        run: |
+          set -euo pipefail
+          if ! (sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client) > "$RUNNER_TEMP/setup.log" 2>&1; then
+            echo "::error::PostgreSQL client setup unavailable; details suppressed."
+            exit 1
+          fi
+          python3 -m py_compile scripts/migration-data-readonly-db-probe.py
+      - name: Probe isolated application and grader databases without reading row contents
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/migration-data-readonly-db-probe.py
+      - name: Purge transient files and Azure session
+        if: always()
+        run: |
+          rm -f "$RUNNER_TEMP/setup.log"
+          az logout -o none >/dev/null 2>&1 || true

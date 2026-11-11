@@ -1,5 +1,5 @@
 name: Recover original CodeRats Azure Files media to isolated target once
-# Source discovery supports a unique AzureFile mount across multiple original API containers; no names printed.
+# Disabled Azure source may omit stopped container metadata: require exactly one persisted AzureFile volume.
 on:
   workflow_dispatch:
     inputs:

@@ -54,7 +54,7 @@ def get_source_storage():
     template = props.get("template") or {}
     container = (template.get("containers") or [])
     volumes = {v.get("name"): v for v in template.get("volumes") or [] if isinstance(v, dict)}
-    if not container or not all(isinstance(c, dict) for c in container):
+    if not isinstance(container, list) or not all(isinstance(c, dict) for c in container):
         raise RuntimeError("Ambiguous source API mount layout")
     mounts = [m for c in container for m in (c.get("volumeMounts") or []) if isinstance(m, dict)]
     print("MEDIA_STAGE_SOURCE_API_AZUREFILE_DECLARED=" + str(any(v.get("storageType") == "AzureFile" for v in volumes.values())).lower())
@@ -62,10 +62,17 @@ def get_source_storage():
     azure_mounts = [
         volumes[m.get("volumeName")].get("storageName")
         for m in mounts
-        if isinstance(m, dict) and m.get("volumeName") in volumes
-        and volumes[m.get("volumeName")].get("storageType") == "AzureFile"
+        if m.get("volumeName") in volumes and
+           volumes[m.get("volumeName")].get("storageType") == "AzureFile"
     ]
     azure_mounts = list(dict.fromkeys(x for x in azure_mounts if isinstance(x, str)))
+    if not azure_mounts:
+        # A Disabled subscription may omit runtime container metadata entirely.
+        # A unique persisted AzureFile volume still identifies the old share.
+        declared = [v.get("storageName") for v in volumes.values()
+                    if v.get("storageType") == "AzureFile" and isinstance(v.get("storageName"), str)]
+        azure_mounts = list(dict.fromkeys(declared))
+        print("MEDIA_STAGE_SOURCE_USING_DECLARED_VOLUME_ONLY=true")
     if len(azure_mounts) != 1:
         raise RuntimeError("Original API media share mount not unique")
     env_id = props.get("managedEnvironmentId") or ""

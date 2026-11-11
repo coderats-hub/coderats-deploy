@@ -16,26 +16,33 @@ for name in ("dev-container.yml", "dev-get-worker.yml", "validate-templates.yml"
     if name == "validate-templates.yml":
         assert "ubuntu-latest" in text, "Only public-source template lint may use hosted runners"
     elif name == "deploy-private-dev.yml":
-        # This workflow runs HERE, not in the private caller repository.
+        # Official Brazil South Azure only, via existing protected destination OIDC.
         on = data.get("on", data.get(True, {}))
-        assert isinstance(on, dict) and set(on) == {"workflow_dispatch", "push", "schedule"}
-        assert on["schedule"] == [{"cron": "*/15 * * * *"}]
-        assert "github.event_name == 'schedule'" in text
+        assert isinstance(on, dict) and set(on) == {"workflow_dispatch", "push"}
         assert on["push"] == {"branches": ["main"], "paths": [".github/workflows/deploy-private-dev.yml"]}
-        assert "github.event.head_commit.message == 'ci(dev): publish beta4 api'" in text
-        assert "runs-on: ubuntu-latest" in text
-        assert "self-hosted" not in text
+        assert set(on["workflow_dispatch"]["inputs"]["service"]["options"]) == {"web", "api"}
+        assert "github.event.head_commit.message == 'ci(migration): release target web'" in text
+        assert "github.event.head_commit.message == 'ci(migration): release target api'" in text
+        assert "runs-on: ubuntu-latest" in text and "self-hosted" not in text
         assert "Check required protected DEV credentials" in text
         assert "actions/create-github-app-token@" in text
         assert "persist-credentials: false" in text
         assert "github.repository == 'coderats-hub/coderats-deploy'" in text
         assert "github.ref == 'refs/heads/main'" in text
-        assert "environment: dev" in text
+        assert "environment: migration-target" in text
         assert "APP_PRIVATE_KEY" in text
-        assert "rg-coderats-base-dev" in text
+        assert "rg-coderats-migration-c26m0911" in text
+        assert "ca-cdmstd-web-c26m0911" in text
+        assert "ca-cdmstd-api-c26m0911" in text
+        assert "NEXT_PUBLIC_API_URL=https://coderats.club" in text
+        assert "GITHUB_OAUTH_REDIRECT_URI=https://coderats.club/login/oauth2/code/github" in text
+        assert "rg-coderats-base-dev" not in text
+        assert "crcoderatsbasedev9e0045" not in text
+        assert "environment: dev" not in text
+        assert "schedule:" not in text
+        assert "containerapp job start" not in text
         assert "workflow_call" not in text
         assert "pull_request" not in text and "repository_dispatch" not in text
-        assert "GET_BACKFILL_ENABLED=false" in text
     else:
         # Deprecated templates remain present for audit; they must not build
         # private applications on public GitHub-hosted runners.
@@ -100,5 +107,31 @@ media_python = root / "scripts" / "migration-recover-azure-files.py"
 assert media_python.exists()
 compile(media_python.read_text(), str(media_python), "exec")
 
-print("PASS: public dispatcher has protected main/DEV-only entrypoint, private App checkout, "
-      "DEV guards and public hosted-runner builds; all Bash scripts parse.")
+
+# The canonical Grader release must also be isolated from the exhausted Azure.
+grader = workflows / "release-grader-languages-dev.yml"
+grader_text = grader.read_text()
+grader_data = yaml.safe_load(grader_text)
+assert "environment: migration-target" in grader_text
+assert "rg-coderats-migration-c26m0911" in grader_text
+assert "ca-cdmstd-grader-c26m0911" in grader_text
+assert "rg-coderats-base-dev" not in grader_text
+assert grader_data.get("jobs", {}).get("release")
+for job in grader_data["jobs"].values():
+    for step in job.get("steps", []):
+        script = step.get("run")
+        if isinstance(script, str):
+            result = subprocess.run(["bash", "-n"], input=script,
+                                    text=True, capture_output=True)
+            assert result.returncode == 0, (
+                f"Official Grader bad shell syntax: {result.stderr}"
+            )
+for name in ("deploy-optimizations-release.yml", "deploy-profile-release-preview.yml", "restore-grader-ai-dev.yml"):
+    legacy = yaml.safe_load((workflows / name).read_text())
+    events = legacy.get("on", legacy.get(True, {}))
+    assert set(events) == {"workflow_dispatch"}
+    assert "id-token: write" not in (workflows / name).read_text()
+    assert set(legacy["jobs"]) == {"retired"}
+
+print("PASS: official Azure release is protected by exact destination scope, private checkout, "
+      "Bash syntax checks and legacy workflow retirement.")

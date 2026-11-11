@@ -146,10 +146,10 @@ def main():
             verified[kind] = upload_and_verify(file, kind, run_id, storage, root)
             print("TARGET_PRE_RESTORE_BACKUP_" + kind.upper() + "_VERIFIED=True")
         with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
-            summary.write("### Isolated migration-target: rollback backups verified\\n")
-            summary.write("- API and Grader existing target databases: separately dumped and verified in private destination Blob\\n")
-            summary.write("- Zero source subscription access, DB writes, DNS changes or public data artifacts\\n")
-            summary.write("- No restoration was attempted; keep the blobs for rollback until after cutover acceptance\\n")
+            summary.write("### Isolated migration-target: rollback backups verified\n")
+            summary.write("- API and Grader existing target databases: separately dumped and verified in private destination Blob\n")
+            summary.write("- Zero source subscription access, DB writes, DNS changes or public data artifacts\n")
+            summary.write("- No restoration was attempted; keep the blobs for rollback until after cutover acceptance\n")
     finally:
         shutil.rmtree(root, ignore_errors=True)
 

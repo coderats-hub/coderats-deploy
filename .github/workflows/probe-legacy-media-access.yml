@@ -1,0 +1,157 @@
+name: Probe old CodeRats media availability before migration (read-only)
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "Type PROBE_OLD_MEDIA (source/target metadata only; zero writes)"
+        required: true
+        type: string
+  push:
+    branches: [main]
+    paths: [".github/workflows/probe-legacy-media-access.yml"]
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: coderats-media-recovery-probe
+  cancel-in-progress: false
+
+jobs:
+  source:
+    if: >-
+      github.repository == 'coderats-hub/coderats-deploy' &&
+      github.ref == 'refs/heads/main' &&
+      ((github.event_name == 'workflow_dispatch' && inputs.confirmation == 'PROBE_OLD_MEDIA') ||
+       (github.event_name == 'push' && github.event.head_commit.message == 'ci(migration): probe legacy media once'))
+    environment: dev
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      SID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      RG: rg-coderats-base-dev
+      API: ca-coderats-base-api-dev
+    steps:
+      - name: Authenticate to original Azure subscription
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Inspect old media storage and mount metadata without file contents
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          [[ -n "$SID" && "$SID" != 'da3650a9-e291-43f1-ae4b-9dcc8ff84239' ]] || exit 1
+          [[ "$(az account show --query id -o tsv)" == "$SID" ]]
+          code=0
+          az account subscription show --id "$SID" --only-show-errors -o json > "$RUNNER_TEMP/subscription.json" 2>/dev/null || code=1
+          if [[ "$code" == 0 ]]; then
+            SUB_STATE="$(python3 - <<'PY'
+          import json,os
+          d=json.load(open(os.path.join(os.environ['RUNNER_TEMP'],'subscription.json')))
+          state=str(d.get('state','unknown'))
+          print(state if state in ('Enabled','Disabled','Warned','PastDue','Deleted') else 'other')
+          PY
+            )"
+          else
+            SUB_STATE=unavailable
+          fi
+          echo "MEDIA_SOURCE_SUBSCRIPTION_STATE=$SUB_STATE"
+          if az containerapp show --subscription "$SID" -g "$RG" -n "$API"             --only-show-errors -o json > "$RUNNER_TEMP/source-api.json" 2>/dev/null; then
+            export CAE_ID="$(python3 - <<'PY'
+          import json,os
+          d=json.load(open(os.path.join(os.environ['RUNNER_TEMP'],'source-api.json')))
+          p=d.get('properties') or {}
+          t=p.get('template') or {}
+          v=[x for x in (t.get('volumes') or []) if isinstance(x,dict) and x.get('storageType')=='AzureFile']
+          print(p.get('managedEnvironmentId') or '')
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:
+              f.write('- Source API Azure Files mount declared: '+str(bool(v))+'\\n')
+          PY
+            )"
+            echo "MEDIA_SOURCE_API_METADATA_ACCESSIBLE=true"
+            if [[ -n "$CAE_ID" ]]; then
+              envname="${CAE_ID##*/}"
+              if az containerapp env storage list --subscription "$SID" -g "$RG" -n "$envname"                 --only-show-errors -o json > "$RUNNER_TEMP/source-mounts.json" 2>/dev/null; then
+                python3 - <<'PY'
+          import json,os
+          data=json.load(open(os.path.join(os.environ['RUNNER_TEMP'],'source-mounts.json')))
+          matches=[x for x in data if isinstance(x,dict) and ((x.get('properties') or {}).get('azureFile') or {}).get('shareName')]
+          print('MEDIA_SOURCE_CAE_STORAGE_BINDING_ACCESSIBLE=true')
+          print('MEDIA_SOURCE_AZURE_FILE_BINDING_PRESENT='+str(bool(matches)).lower())
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:
+              f.write('- Source environment media binding readable: '+str(bool(matches))+'\\n')
+          PY
+              else
+                echo 'MEDIA_SOURCE_CAE_STORAGE_BINDING_ACCESSIBLE=false'
+              fi
+            fi
+          else
+            echo "MEDIA_SOURCE_API_METADATA_ACCESSIBLE=false"
+          fi
+          if az storage account list --subscription "$SID" -g "$RG" --only-show-errors             -o json > "$RUNNER_TEMP/source-accounts.json" 2>/dev/null; then
+            python3 - <<'PY'
+          import json,os
+          d=json.load(open(os.path.join(os.environ['RUNNER_TEMP'],'source-accounts.json')))
+          print('MEDIA_SOURCE_STORAGE_ACCOUNT_INVENTORY_ACCESSIBLE=true')
+          print('MEDIA_SOURCE_STORAGE_ACCOUNTS_PRESENT='+str(bool(d)).lower())
+          PY
+          else
+            echo 'MEDIA_SOURCE_STORAGE_ACCOUNT_INVENTORY_ACCESSIBLE=false'
+          fi
+          {
+            echo '### Legacy media availability (read-only)'
+            echo "- Source subscription state: $SUB_STATE"
+            echo '- No Azure/DB/DNS/app writes; no user data or secrets logged'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Purge source metadata
+        if: always()
+        shell: bash
+        run: |
+          rm -f "$RUNNER_TEMP/source-api.json" "$RUNNER_TEMP/source-mounts.json" "$RUNNER_TEMP/source-accounts.json" "$RUNNER_TEMP/subscription.json"
+          az logout -o none >/dev/null 2>&1 || true
+
+  destination:
+    if: >-
+      github.repository == 'coderats-hub/coderats-deploy' &&
+      github.ref == 'refs/heads/main' &&
+      ((github.event_name == 'workflow_dispatch' && inputs.confirmation == 'PROBE_OLD_MEDIA') ||
+       (github.event_name == 'push' && github.event.head_commit.message == 'ci(migration): probe legacy media once'))
+    environment: migration-target
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      SID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      RG: rg-coderats-migration-c26m0911
+      STORAGE: stcoderatsmigc26m0911
+      SHARE: coderats-media
+    steps:
+      - name: Authenticate to isolated target Azure
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Check target file share metadata only
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SID" == 'da3650a9-e291-43f1-ae4b-9dcc8ff84239' ]] || exit 1
+          [[ "$(az account show --query id -o tsv)" == "$SID" ]] || exit 1
+          az storage share-rm show --subscription "$SID" -g "$RG"             --storage-account "$STORAGE" --name "$SHARE" --only-show-errors             -o json > "$RUNNER_TEMP/share.json" 2>/dev/null || { echo '::error::Target media share not readable.'; exit 1; }
+          python3 - <<'PY'
+          import json,os,sys
+          d=json.load(open(os.path.join(os.environ['RUNNER_TEMP'],'share.json')))
+          if d.get('name')!=os.environ['SHARE']: sys.exit(1)
+          print('MEDIA_TARGET_SHARE_EXISTS=true')
+          print('MEDIA_TARGET_SHARE_METADATA_READABLE=true')
+          PY
+      - name: Clean temporary metadata
+        if: always()
+        shell: bash
+        run: |
+          rm -f "$RUNNER_TEMP/share.json"
+          az logout -o none >/dev/null 2>&1 || true

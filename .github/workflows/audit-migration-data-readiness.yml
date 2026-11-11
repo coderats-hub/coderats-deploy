@@ -158,6 +158,7 @@ jobs:
           az postgres flexible-server db list --subscription "$SID" -g "$RG" -s "$DB" --only-show-errors -o json > "$RUNNER_TEMP/target-databases.json" 2>"$RUNNER_TEMP/cli-error.log" || { echo "::error::Target database listing unavailable."; exit 1; }
           az postgres flexible-server firewall-rule list --subscription "$SID" -g "$RG" --server-name "$DB" --only-show-errors -o json > "$RUNNER_TEMP/target-firewall.json" 2>"$RUNNER_TEMP/cli-error.log" || { echo "::error::Target firewall inspection unavailable."; exit 1; }
           az storage share-rm show --subscription "$SID" -g "$RG" --storage-account "$STORAGE" --name "$MEDIA" --only-show-errors -o json > "$RUNNER_TEMP/target-media.json" 2>"$RUNNER_TEMP/cli-error.log" || { echo "::error::Target media share unavailable."; exit 1; }
+          az containerapp env list --subscription "$SID" -g "$RG" --only-show-errors -o json > "$RUNNER_TEMP/target-caes.json" 2>"$RUNNER_TEMP/cli-error.log" || { echo "::error::Destination environment network metadata unavailable."; exit 1; }
           for name in "$API" "$GRADER"; do
             az containerapp show --subscription "$SID" -g "$RG" -n "$name" --only-show-errors -o json > "$RUNNER_TEMP/$name.json" 2>"$RUNNER_TEMP/cli-error.log" || { echo "::error::Target application metadata unavailable."; exit 1; }
           done
@@ -171,6 +172,7 @@ jobs:
           media=load('target-media.json')
           api=load(os.environ['API']+'.json')
           grader=load(os.environ['GRADER']+'.json')
+          caes=load('target-caes.json')
           if db.get('name')!=os.environ['DB'] or api.get('name')!=os.environ['API'] or grader.get('name')!=os.environ['GRADER'] or media.get('name')!=os.environ['MEDIA']:
               sys.exit('::error::Unexpected destination resource identity.')
           tables={x.get('name') for x in databases if isinstance(x,dict)}
@@ -186,6 +188,15 @@ jobs:
           oauth=val('GITHUB_APP_CLIENT_ID')=='Iv23lij1ARW37Q6GIgoF' and bool(ref('GITHUB_APP_CLIENT_SECRET'))
           crypto=val('GITHUB_TOKEN_ENCRYPTION_MODE')=='strict' and bool(ref('GITHUB_TOKEN_ENCRYPTION_KEYS'))
           workers=all(val(n)=='false' for n in ('GET_WORKER_ENABLED','GET_BACKFILL_ENABLED','GRADER_POLLING_ENABLED'))
+          def cae_network(app):
+              mid=((app.get('properties') or {}).get('managedEnvironmentId') or '').lower().rstrip('/')
+              env=next((item for item in caes if isinstance(item,dict) and (item.get('id') or '').lower().rstrip('/')==mid),{})
+              p=(env.get('properties') or {})
+              subnet=bool((p.get('vnetConfiguration') or {}).get('infrastructureSubnetId'))
+              ips=p.get('outboundIpAddresses')
+              return bool(env),subnet,(len(ips) if isinstance(ips,list) else -1)
+          api_cae=cae_network(api)
+          grader_cae=cae_network(grader)
           volumes=tp.get('volumes') or []
           mounts=c[0].get('volumeMounts') or [] if c else []
           media_bound=any(v.get('storageType')=='AzureFile' and any(m.get('volumeName')==v.get('name') for m in mounts) for v in volumes)
@@ -200,6 +211,9 @@ jobs:
               out.write('- GitHub OAuth configured: '+str(oauth)+'\n')
               out.write('- Strict token encryption configured: '+str(crypto)+'\n')
               out.write('- Background processing disabled: '+str(workers)+'\n')
+              out.write('- Target API CAE resolved: '+str(api_cae[0])+'; VNet subnet attached: '+str(api_cae[1])+'; reported outbound IP count: '+str(api_cae[2])+'\n')
+              out.write('- Target Grader CAE resolved: '+str(grader_cae[0])+'; VNet subnet attached: '+str(grader_cae[1])+'; reported outbound IP count: '+str(grader_cae[2])+'\n')
+              out.write('- Outbound IPs are not assumed stable; never remove broad DB access without a verified replacement network path\n')
               out.write('- No row count, DB contents or media content read; no target resources modified\n')
           if not (db.get('state')=='Ready' and dbs_ready and media_bound and oauth and crypto and workers):
               sys.exit('::error::Target prerequisites missing; no migration attempted.')
@@ -207,6 +221,10 @@ jobs:
           print('AUDIT_TARGET_FIREWALL_WIDE_AZURE_SERVICES='+str(wide))
           print('AUDIT_TARGET_PUBLIC_ACCESS='+str((db.get('network') or {}).get('publicNetworkAccess','unreported')))
           print('AUDIT_TARGET_GET_AND_GRADER_POLLING_OFF='+str(workers))
+          print('AUDIT_TARGET_API_CAE_RESOLVED='+str(api_cae[0]))
+          print('AUDIT_TARGET_API_CAE_HAS_VNET_SUBNET='+str(api_cae[1]))
+          print('AUDIT_TARGET_GRADER_CAE_RESOLVED='+str(grader_cae[0]))
+          print('AUDIT_TARGET_GRADER_CAE_HAS_VNET_SUBNET='+str(grader_cae[1]))
           PY
       - name: Remove temporary metadata and log out
         if: always()

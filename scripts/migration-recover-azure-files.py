@@ -54,9 +54,9 @@ def get_source_storage():
     template = props.get("template") or {}
     container = (template.get("containers") or [])
     volumes = {v.get("name"): v for v in template.get("volumes") or [] if isinstance(v, dict)}
-    if len(container) != 1:
+    if not container or not all(isinstance(c, dict) for c in container):
         raise RuntimeError("Ambiguous source API mount layout")
-    mounts = container[0].get("volumeMounts") or []
+    mounts = [m for c in container for m in (c.get("volumeMounts") or []) if isinstance(m, dict)]
     print("MEDIA_STAGE_SOURCE_API_AZUREFILE_DECLARED=" + str(any(v.get("storageType") == "AzureFile" for v in volumes.values())).lower())
     print("MEDIA_STAGE_SOURCE_API_VOLUME_MOUNTS_PRESENT=" + str(bool(mounts)).lower())
     azure_mounts = [

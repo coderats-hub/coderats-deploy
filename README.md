@@ -1,5 +1,8 @@
 # CodeRats Deploy — central CI/CD repository
 
+> **Official CodeRats deployment (from 2026-11-11):** `coderats.club` now uses the **new Brazil South Azure subscription**. The canonical release instructions and current workflows are in [docs/official-azure-release.md](docs/official-azure-release.md). Older instructions below for `rg-coderats-base-dev` and the `dev` GitHub Actions environment describe the **retired infrastructure** and must not be used for new releases.
+
+
 **This public repository owns and executes DEV deployments.** The private CodeRats
 application repositories are **source checkouts**, never workflow callers.
 

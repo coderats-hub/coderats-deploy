@@ -18,7 +18,7 @@ AZURE_SOURCE_APP_NAMES = (
 )
 TARGET_ACCOUNT = "stcoderatsmigc26m0911"
 TARGET_CONTAINER = "coderats-migration-staging"
-PG_CLIENT_IMAGE = "postgres:18-alpine"
+PG_CLIENT_IMAGE = "postgres:16-alpine"
 
 def az_private(*parts):
     result = subprocess.run(["az",*parts,"--only-show-errors","-o","json"],

@@ -1,0 +1,273 @@
+name: Stage encrypted-channel CodeRats source database snapshots in private target Blob
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "Type STAGE_SOURCE_DB_SNAPSHOT (source read-only, target private Blob only)"
+        required: true
+        type: string
+  push:
+    branches: [main]
+    paths: [".github/workflows/stage-migration-source-db-snapshots.yml"]
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: coderats-source-db-private-blob-staging
+  cancel-in-progress: false
+
+jobs:
+  source-certificate:
+    if: >-
+      github.repository == 'coderats-hub/coderats-deploy' &&
+      github.ref == 'refs/heads/main' &&
+      (
+        (github.event_name == 'workflow_dispatch' && inputs.confirmation == 'STAGE_SOURCE_DB_SNAPSHOT') ||
+        (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'ci(migration): stage source databases privately'))
+      )
+    environment: dev
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      cert_b64: ${{ steps.certificate.outputs.cert_b64 }}
+    steps:
+      - name: Issue public-only ephemeral certificate from already installed DEV GitHub App key
+        id: certificate
+        env:
+          PRIVATE_PEM: ${{ secrets.CODERATS_DEPLOY_APP_PRIVATE_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          [[ -n "${PRIVATE_PEM:-}" ]] || { echo "::error::DEV GitHub App private key unavailable."; exit 1; }
+          printf '%s\n' "$PRIVATE_PEM" > "$RUNNER_TEMP/source-key.pem"
+          openssl pkey -in "$RUNNER_TEMP/source-key.pem" -noout > /dev/null 2>&1 || exit 1
+          openssl req -new -x509 -sha256 -days 1 -key "$RUNNER_TEMP/source-key.pem" \
+            -subj "/CN=CodeRats temporary migration transport" -out "$RUNNER_TEMP/source-cert.pem" \
+            >/dev/null 2>&1 || { echo "::error::Migration public certificate generation failed."; exit 1; }
+          echo "cert_b64=$(base64 -w0 < "$RUNNER_TEMP/source-cert.pem")" >> "$GITHUB_OUTPUT"
+          echo "Published only an ephemeral PUBLIC certificate; private GitHub App key stays within DEV secret scope."
+      - name: Erase temporary DEV key files
+        if: always()
+        run: |
+          rm -f "$RUNNER_TEMP/source-key.pem" "$RUNNER_TEMP/source-cert.pem"
+
+  prepare-target-private-storage:
+    needs: source-certificate
+    environment: migration-target
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      encrypted_manifest: ${{ steps.stage.outputs.encrypted_manifest }}
+    env:
+      SID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      TID: ${{ secrets.AZURE_TENANT_ID }}
+      RG: rg-coderats-migration-c26m0911
+      STORAGE: stcoderatsmigc26m0911
+      CONTAINER: coderats-migration-staging
+    steps:
+      - name: Authenticate to new Azure subscription only
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Create private target blob staging and encrypt write-only SAS manifest to origin certificate
+        id: stage
+        env:
+          CERT_B64: ${{ needs.source-certificate.outputs.cert_b64 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          [[ "$SID" == "da3650a9-e291-43f1-ae4b-9dcc8ff84239" ]]
+          [[ "$TID" == "1cf74c7e-fcd9-46f7-8a9d-e699d3529003" ]]
+          [[ "$(az account show --query id -o tsv)" == "$SID" ]]
+          [[ "$(az account show --query tenantId -o tsv)" == "$TID" ]]
+          az storage account show --subscription "$SID" -g "$RG" -n "$STORAGE" \
+             --only-show-errors -o json > "$RUNNER_TEMP/storage-metadata.json"
+          python3 - <<'PY'
+          import json,os,sys
+          d=json.load(open(os.path.join(os.environ['RUNNER_TEMP'],'storage-metadata.json')))
+          if d.get('name')!=os.environ['STORAGE'] or d.get('allowBlobPublicAccess') is not False:
+              sys.exit('::error::Unexpected or publicly enabled destination Blob account.')
+          PY
+          printf '%s' "$CERT_B64" | base64 -d > "$RUNNER_TEMP/source-cert.pem"
+          openssl x509 -in "$RUNNER_TEMP/source-cert.pem" -noout >/dev/null 2>&1
+          key="$(az storage account keys list --subscription "$SID" -g "$RG" -n "$STORAGE" \
+             --query '[0].value' --only-show-errors -o tsv 2>/dev/null)"
+          [[ -n "$key" ]] || { echo "::error::Destination storage permission missing."; exit 1; }
+          echo "::add-mask::$key"
+          az storage container create --account-name "$STORAGE" --account-key "$key" \
+             --name "$CONTAINER" --only-show-errors -o none >"$RUNNER_TEMP/storage-cmd.log" 2>&1 || {
+              echo "::error::Private Blob staging container creation failed."; exit 1;
+             }
+          expiry="$(date -u -d '+3 hours' '+%Y-%m-%dT%H:%MZ')"
+          for kind in api grader; do
+            blob="coderats-$kind-$GITHUB_RUN_ID.dump"
+            sas="$(az storage blob generate-sas --account-name "$STORAGE" --account-key "$key" \
+               --container-name "$CONTAINER" --name "$blob" --permissions cw \
+               --expiry "$expiry" --https-only --only-show-errors -o tsv 2>/dev/null)"
+            [[ -n "$sas" ]] || { echo "::error::Scoped SAS generation failed."; exit 1; }
+            echo "::add-mask::$sas"
+            if [[ "$kind" == api ]]; then api_url="https://$STORAGE.blob.core.windows.net/$CONTAINER/$blob?$sas"
+            else grader_url="https://$STORAGE.blob.core.windows.net/$CONTAINER/$blob?$sas"; fi
+          done
+          export API_URI="$api_url" GRADER_URI="$grader_url"
+          python3 - <<'PY'
+          import json,os
+          with open(os.path.join(os.environ['RUNNER_TEMP'],'private-manifest.json'),'w') as f:
+              json.dump({'api':os.environ['API_URI'],'grader':os.environ['GRADER_URI']},f)
+          PY
+          openssl cms -encrypt -binary -aes256 -in "$RUNNER_TEMP/private-manifest.json" \
+            -out "$RUNNER_TEMP/manifest.cms" -outform DER "$RUNNER_TEMP/source-cert.pem" \
+            >/dev/null 2>&1 || { echo "::error::Encrypted staging capability failed."; exit 1; }
+          echo "encrypted_manifest=$(base64 -w0 < "$RUNNER_TEMP/manifest.cms")" >> "$GITHUB_OUTPUT"
+          echo "Created private destination Blob container and encrypted scoped write-only capabilities."
+      - name: Purge private SAS and temporary target state
+        if: always()
+        shell: bash
+        run: |
+          rm -f "$RUNNER_TEMP"/private-manifest.json "$RUNNER_TEMP"/manifest.cms \
+            "$RUNNER_TEMP"/source-cert.pem "$RUNNER_TEMP"/storage-metadata.json "$RUNNER_TEMP"/storage-cmd.log
+          az logout -o none >/dev/null 2>&1 || true
+
+  source-export:
+    needs: [source-certificate,prepare-target-private-storage]
+    environment: dev
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      SOURCE_SID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      SOURCE_APP_KEY: ${{ secrets.CODERATS_DEPLOY_APP_PRIVATE_KEY }}
+      CERT_B64: ${{ needs.source-certificate.outputs.cert_b64 }}
+      ENCRYPTED_MANIFEST: ${{ needs.prepare-target-private-storage.outputs.encrypted_manifest }}
+      MIGRATION_STAGE: SNAPSHOT_ONLY
+    outputs:
+      api_sha256: ${{ steps.snapshot.outputs.api_sha256 }}
+      api_bytes: ${{ steps.snapshot.outputs.api_bytes }}
+      grader_sha256: ${{ steps.snapshot.outputs.grader_sha256 }}
+      grader_bytes: ${{ steps.snapshot.outputs.grader_bytes }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Sign in exclusively to source DEV subscription
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Verify source scope and decrypt only the destination write-only SAS capability
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          [[ -n "$SOURCE_SID" && "$SOURCE_SID" != 'da3650a9-e291-43f1-ae4b-9dcc8ff84239' ]] || exit 1
+          [[ "$(az account show --query id -o tsv)" == "$SOURCE_SID" ]]
+          [[ -n "$SOURCE_APP_KEY" && -n "$CERT_B64" && -n "$ENCRYPTED_MANIFEST" ]] || exit 1
+          printf '%s\n' "$SOURCE_APP_KEY" > "$RUNNER_TEMP/dev-app-private.pem"
+          printf '%s' "$CERT_B64" | base64 -d > "$RUNNER_TEMP/migration-cert.pem"
+          printf '%s' "$ENCRYPTED_MANIFEST" | base64 -d > "$RUNNER_TEMP/migration-capability.cms"
+          openssl cms -decrypt -inform DER -in "$RUNNER_TEMP/migration-capability.cms" \
+            -recip "$RUNNER_TEMP/migration-cert.pem" -inkey "$RUNNER_TEMP/dev-app-private.pem" \
+            -out "$RUNNER_TEMP/source-target-manifest.json" >/dev/null 2>&1 || {
+              echo "::error::Private transport capability could not be decrypted."; exit 1;
+            }
+          python3 - <<'PY'
+          import json,os
+          for v in json.load(open(os.path.join(os.environ['RUNNER_TEMP'],'source-target-manifest.json'))).values():
+              print('::add-mask::'+str(v))
+          PY
+          echo "MIGRATION_PRIVATE_MANIFEST=$RUNNER_TEMP/source-target-manifest.json" >> "$GITHUB_ENV"
+          python3 -m py_compile scripts/migration-export-to-private-blob.py
+      - name: Export database snapshots without user data in GitHub artifacts or logs
+        id: snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/migration-export-to-private-blob.py
+      - name: Purge private dumps, transport and Azure session
+        if: always()
+        shell: bash
+        run: |
+          rm -rf "$RUNNER_TEMP/private-migration-dumps"
+          rm -f "$RUNNER_TEMP"/dev-app-private.pem "$RUNNER_TEMP"/migration-cert.pem \
+            "$RUNNER_TEMP"/migration-capability.cms "$RUNNER_TEMP"/source-target-manifest.json
+          az logout -o none >/dev/null 2>&1 || true
+
+  verify-private-archive:
+    needs: [source-export]
+    environment: migration-target
+    runs-on: ubuntu-latest
+    timeout-minutes: 65
+    env:
+      SID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      TID: ${{ secrets.AZURE_TENANT_ID }}
+      RG: rg-coderats-migration-c26m0911
+      STORAGE: stcoderatsmigc26m0911
+      CONTAINER: coderats-migration-staging
+      API_SHA: ${{ needs.source-export.outputs.api_sha256 }}
+      GRADER_SHA: ${{ needs.source-export.outputs.grader_sha256 }}
+      API_BYTES: ${{ needs.source-export.outputs.api_bytes }}
+      GRADER_BYTES: ${{ needs.source-export.outputs.grader_bytes }}
+    steps:
+      - name: Authenticate to isolated destination and verify private backups
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Download source archives privately and verify SHA-256 and PostgreSQL archive format
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          [[ "$SID" == 'da3650a9-e291-43f1-ae4b-9dcc8ff84239' ]]
+          [[ "$TID" == '1cf74c7e-fcd9-46f7-8a9d-e699d3529003' ]]
+          [[ "$(az account show --query id -o tsv)" == "$SID" ]]
+          [[ -n "$API_SHA" && -n "$GRADER_SHA" && -n "$API_BYTES" && -n "$GRADER_BYTES" ]] || exit 1
+          key="$(az storage account keys list --subscription "$SID" -g "$RG" -n "$STORAGE" \
+             --query '[0].value' --only-show-errors -o tsv 2>/dev/null)"
+          [[ -n "$key" ]] || exit 1
+          echo "::add-mask::$key"
+          mkdir -p "$RUNNER_TEMP/verify-private-archives"
+          for kind in api grader; do
+            blob="coderats-$kind-$GITHUB_RUN_ID.dump"
+            if ! az storage blob download --account-name "$STORAGE" --account-key "$key" \
+               --container-name "$CONTAINER" --name "$blob" \
+               --file "$RUNNER_TEMP/verify-private-archives/$kind.dump" --overwrite true \
+               --only-show-errors -o none > "$RUNNER_TEMP/verify-cmd.log" 2>&1; then
+              echo "::error::Destination backup could not be retrieved privately."; exit 1;
+            fi
+            actual="$(sha256sum "$RUNNER_TEMP/verify-private-archives/$kind.dump" | awk '{print $1}')"
+            bytes="$(stat -c '%s' "$RUNNER_TEMP/verify-private-archives/$kind.dump")"
+            if [[ "$kind" == api ]]; then expected_sha="$API_SHA"; expected_bytes="$API_BYTES";
+            else expected_sha="$GRADER_SHA"; expected_bytes="$GRADER_BYTES"; fi
+            [[ "$actual" == "$expected_sha" && "$bytes" == "$expected_bytes" ]] || {
+              echo "::error::Private backup checksum or length verification failed."; exit 1;
+            }
+            if ! docker run --rm -v "$RUNNER_TEMP/verify-private-archives:/backup:ro" \
+                 postgres:16-alpine pg_restore --list "/backup/$kind.dump" \
+                 >/dev/null 2>&1; then
+              echo "::error::Private PostgreSQL archive content validation failed."; exit 1;
+            fi
+          done
+          {
+            echo '### CodeRats migration — PRIVATE source database snapshot verified'
+            echo '- Two read-only source database snapshots uploaded to destination Blob only'
+            echo '- AES-256 encrypted capability handoff and HTTPS transfer'
+            echo '- Downloaded archives SHA-256 verified and pg_restore list validated'
+            echo '- Neither original DEV nor destination PostgreSQL tables were changed'
+            echo '- No GitHub artifact contains user data; no DNS/GET/Grader runtime changes'
+            echo '- This is NOT the final user data restore, and not yet a consistent cutover'
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo 'Both PostgreSQL source database snapshots are safely staged and verified in destination private Blob storage.'
+      - name: Purge downloaded private archives
+        if: always()
+        run: |
+          rm -rf "$RUNNER_TEMP/verify-private-archives"
+          rm -f "$RUNNER_TEMP/verify-cmd.log"
+          az logout -o none >/dev/null 2>&1 || true

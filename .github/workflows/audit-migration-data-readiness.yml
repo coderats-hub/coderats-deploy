@@ -105,6 +105,10 @@ jobs:
           if not src_online:
               sys.exit('::error::Source database not Ready; migration blocked.')
           print('Source infrastructure read-only audit completed.')
+          print('AUDIT_SOURCE_TARGET_RG_VISIBLE='+os.environ['SOURCE_CAN_READ_TARGET'])
+          print('AUDIT_SOURCE_POSTGRES_PUBLIC_ACCESS='+str(public if public in ('Enabled','Disabled') else 'unreported'))
+          print('AUDIT_SOURCE_GITHUB_KEYS_CONFIGURED='+str(keys))
+          print('AUDIT_SOURCE_CRYPTO_MODE='+src_crypto)
           PY
       - name: Remove temporary metadata and log out
         if: always()
@@ -200,6 +204,9 @@ jobs:
           if not (db.get('state')=='Ready' and dbs_ready and media_bound and oauth and crypto and workers):
               sys.exit('::error::Target prerequisites missing; no migration attempted.')
           print('Target infrastructure read-only audit completed.')
+          print('AUDIT_TARGET_FIREWALL_WIDE_AZURE_SERVICES='+str(wide))
+          print('AUDIT_TARGET_PUBLIC_ACCESS='+str((db.get('network') or {}).get('publicNetworkAccess','unreported')))
+          print('AUDIT_TARGET_GET_AND_GRADER_POLLING_OFF='+str(workers))
           PY
       - name: Remove temporary metadata and log out
         if: always()

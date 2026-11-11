@@ -148,7 +148,7 @@ def main():
     root = pathlib.Path(os.environ["RUNNER_TEMP"]) / "private-media-recovery"
     root.mkdir(mode=0o700, exist_ok=False)
     try:
-        transfer = root / "target-url.txt"
+        transfer = pathlib.Path(os.environ["RUNNER_TEMP"]) / "private-media-target-uri.txt"
         destination_uri = validate_target_sas(transfer.read_text(encoding="utf-8"))
         expiry = run(["date", "-u", "-d", "+2 hours", "+%Y-%m-%dT%H:%MZ"], capture=True).strip()
         env = os.environ.copy()

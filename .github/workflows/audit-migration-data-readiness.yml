@@ -1,0 +1,209 @@
+name: Audit CodeRats source and isolated target data migration readiness
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "Type AUDIT_MIGRATION_DATA (read-only source and target)"
+        required: true
+        type: string
+  push:
+    branches: [main]
+    paths: [".github/workflows/audit-migration-data-readiness.yml"]
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: coderats-data-migration-readiness-audit
+  cancel-in-progress: false
+
+jobs:
+  source:
+    if: >-
+      github.repository == 'coderats-hub/coderats-deploy' &&
+      github.ref == 'refs/heads/main' &&
+      (
+        (github.event_name == 'workflow_dispatch' && inputs.confirmation == 'AUDIT_MIGRATION_DATA') ||
+        (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'ci(migration): audit data transfer readiness'))
+      )
+    environment: dev
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      SOURCE_SID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      SOURCE_RG: rg-coderats-base-dev
+      SOURCE_API: ca-coderats-base-api-dev
+      SOURCE_GRADER: ca-coderats-grader-dev
+      SOURCE_DB: psql-coderats-base-dev-9e0045
+      DEST_SID: da3650a9-e291-43f1-ae4b-9dcc8ff84239
+    steps:
+      - name: Login source OIDC for read-only inspection
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Audit production source configuration without touching data or secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          [[ -n "${SOURCE_SID:-}" && "$SOURCE_SID" != "$DEST_SID" ]] || { echo "::error::Source subscription scope blocked."; exit 1; }
+          [[ "$(az account show --query id -o tsv)" == "$SOURCE_SID" ]] || exit 1
+          [[ "$(az group show --subscription "$SOURCE_SID" -n "$SOURCE_RG" --query name -o tsv --only-show-errors)" == "$SOURCE_RG" ]] || exit 1
+          for name in "$SOURCE_API" "$SOURCE_GRADER"; do
+            az containerapp show --subscription "$SOURCE_SID" -g "$SOURCE_RG" -n "$name" --only-show-errors -o json > "$RUNNER_TEMP/$name.json" 2>"$RUNNER_TEMP/cli-error.log" || { echo "::error::Source service inspection unavailable."; exit 1; }
+          done
+          az postgres flexible-server show --subscription "$SOURCE_SID" -g "$SOURCE_RG" -n "$SOURCE_DB" --only-show-errors -o json > "$RUNNER_TEMP/source-db.json" 2>"$RUNNER_TEMP/cli-error.log" || { echo "::error::Source PostgreSQL metadata unavailable."; exit 1; }
+          az storage account list --subscription "$SOURCE_SID" -g "$SOURCE_RG" --only-show-errors -o json > "$RUNNER_TEMP/source-storage.json" 2>"$RUNNER_TEMP/cli-error.log" || { echo "::error::Source storage metadata unavailable."; exit 1; }
+          if az group show --subscription "$DEST_SID" -n rg-coderats-migration-c26m0911 --query name -o tsv --only-show-errors > "$RUNNER_TEMP/cross-target.txt" 2>/dev/null; then
+            export SOURCE_CAN_READ_TARGET=true
+          else
+            export SOURCE_CAN_READ_TARGET=false
+          fi
+          python3 - <<'PY'
+          import json,os,sys
+          root=os.environ['RUNNER_TEMP']
+          def load(x): return json.load(open(os.path.join(root,x)))
+          a=load(os.environ['SOURCE_API']+'.json')
+          g=load(os.environ['SOURCE_GRADER']+'.json')
+          db=load('source-db.json')
+          storage=load('source-storage.json')
+          def ct(app):
+              p=app.get('properties') or {}
+              template=p.get('template') or {}
+              c=(template.get('containers') or [])
+              e={x.get('name'):x for x in (c[0].get('env') or [])} if c else {}
+              return p,template,e
+          p,t,ev=ct(a)
+          gp,gt,gev=ct(g)
+          if a.get('name')!=os.environ['SOURCE_API'] or g.get('name')!=os.environ['SOURCE_GRADER'] or db.get('name')!=os.environ['SOURCE_DB']:
+              sys.exit('::error::Unexpected source resource identity.')
+          version=str(db.get('version') or '')
+          public=(db.get('network') or {}).get('publicNetworkAccess','Unreported')
+          media=any(isinstance(v,dict) and v.get('storageType')=='AzureFile' for v in (t.get('volumes') or []))
+          def setvar(n): return bool(ev.get(n,{}).get('value') or ev.get(n,{}).get('secretRef'))
+          keys=setvar('GITHUB_TOKEN_ENCRYPTION_KEYS')
+          src_crypto=ev.get('GITHUB_TOKEN_ENCRYPTION_MODE',{}).get('value') or 'unspecified'
+          if src_crypto not in ('strict','legacy','unspecified'): src_crypto='other'
+          src_online=db.get('state')=='Ready'
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as out:
+              out.write('### Source DEV read-only data-migration audit\n')
+              out.write('- Origin OIDC and service identities: verified\n')
+              out.write('- Source PostgreSQL state Ready: '+str(src_online)+'\n')
+              out.write('- Source PostgreSQL major version: '+('15' if version.startswith('15') else 'other')+'\n')
+              out.write('- Source DB public access: '+str(public if public in ('Enabled','Disabled') else 'unreported')+'\n')
+              out.write('- API configured with DATABASE_URL: '+str(setvar('DATABASE_URL'))+'\n')
+              out.write('- API GitHub token encryption mode: '+src_crypto+'\n')
+              out.write('- API token key registry configured: '+str(keys)+'\n')
+              out.write('- Grader database configured: '+str(bool(gev.get('DATABASE_URL')))+'\n')
+              out.write('- API Azure Files volume declared: '+str(media)+'\n')
+              out.write('- Source storage account inventory available: '+str(isinstance(storage,list) and bool(storage))+'\n')
+              out.write('- Source identity can read destination resource group: '+os.environ['SOURCE_CAN_READ_TARGET']+'\n')
+              out.write('- No user rows, secret values, raw logs or file contents accessed\n')
+          if not src_online:
+              sys.exit('::error::Source database not Ready; migration blocked.')
+          print('Source infrastructure read-only audit completed.')
+          PY
+      - name: Remove temporary metadata and log out
+        if: always()
+        shell: bash
+        run: |
+          rm -f "$RUNNER_TEMP"/source-*.json "$RUNNER_TEMP"/source-*.txt "$RUNNER_TEMP"/cli-error.log
+          rm -f "$RUNNER_TEMP"/ca-coderats-base-api-dev.json "$RUNNER_TEMP"/ca-coderats-grader-dev.json "$RUNNER_TEMP"/cross-target.txt
+          az logout -o none >/dev/null 2>&1 || true
+
+  target:
+    if: >-
+      github.repository == 'coderats-hub/coderats-deploy' &&
+      github.ref == 'refs/heads/main' &&
+      (
+        (github.event_name == 'workflow_dispatch' && inputs.confirmation == 'AUDIT_MIGRATION_DATA') ||
+        (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'ci(migration): audit data transfer readiness'))
+      )
+    environment: migration-target
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      SID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      TID: ${{ secrets.AZURE_TENANT_ID }}
+      RG: rg-coderats-migration-c26m0911
+      DB: psql-coderatsmig-c26m0911
+      STORAGE: stcoderatsmigc26m0911
+      MEDIA: coderats-media
+      API: ca-cdmstd-api-c26m0911
+      GRADER: ca-cdmstd-grader-c26m0911
+    steps:
+      - name: Login isolated target OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Audit destination configuration without modifying or reading user data
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          [[ "$SID" == 'da3650a9-e291-43f1-ae4b-9dcc8ff84239' ]] || exit 1
+          [[ "$TID" == '1cf74c7e-fcd9-46f7-8a9d-e699d3529003' ]] || exit 1
+          [[ "$(az account show --query id -o tsv)" == "$SID" ]] || exit 1
+          [[ "$(az account show --query tenantId -o tsv)" == "$TID" ]] || exit 1
+          az postgres flexible-server show --subscription "$SID" -g "$RG" -n "$DB" --only-show-errors -o json > "$RUNNER_TEMP/target-db.json" 2>"$RUNNER_TEMP/cli-error.log" || { echo "::error::Target database metadata unavailable."; exit 1; }
+          az postgres flexible-server db list --subscription "$SID" -g "$RG" -s "$DB" --only-show-errors -o json > "$RUNNER_TEMP/target-databases.json" 2>"$RUNNER_TEMP/cli-error.log" || { echo "::error::Target database listing unavailable."; exit 1; }
+          az postgres flexible-server firewall-rule list --subscription "$SID" -g "$RG" --server-name "$DB" --only-show-errors -o json > "$RUNNER_TEMP/target-firewall.json" 2>"$RUNNER_TEMP/cli-error.log" || { echo "::error::Target firewall inspection unavailable."; exit 1; }
+          az storage share-rm show --subscription "$SID" -g "$RG" --storage-account "$STORAGE" --name "$MEDIA" --only-show-errors -o json > "$RUNNER_TEMP/target-media.json" 2>"$RUNNER_TEMP/cli-error.log" || { echo "::error::Target media share unavailable."; exit 1; }
+          for name in "$API" "$GRADER"; do
+            az containerapp show --subscription "$SID" -g "$RG" -n "$name" --only-show-errors -o json > "$RUNNER_TEMP/$name.json" 2>"$RUNNER_TEMP/cli-error.log" || { echo "::error::Target application metadata unavailable."; exit 1; }
+          done
+          python3 - <<'PY'
+          import json,os,sys
+          r=os.environ['RUNNER_TEMP']
+          def load(f):return json.load(open(os.path.join(r,f)))
+          db=load('target-db.json')
+          databases=load('target-databases.json')
+          fw=load('target-firewall.json')
+          media=load('target-media.json')
+          api=load(os.environ['API']+'.json')
+          grader=load(os.environ['GRADER']+'.json')
+          if db.get('name')!=os.environ['DB'] or api.get('name')!=os.environ['API'] or grader.get('name')!=os.environ['GRADER'] or media.get('name')!=os.environ['MEDIA']:
+              sys.exit('::error::Unexpected destination resource identity.')
+          tables={x.get('name') for x in databases if isinstance(x,dict)}
+          dbs_ready={'coderats_base','coderats_grader'}.issubset(tables)
+          fp=[x for x in fw if isinstance(x,dict)] if isinstance(fw,list) else []
+          wide=any(x.get('startIpAddress')=='0.0.0.0' and x.get('endIpAddress')=='0.0.0.0' for x in fp)
+          p=api.get('properties') or {}
+          tp=p.get('template') or {}
+          c=tp.get('containers') or []
+          e={x.get('name'):x for x in (c[0].get('env') or [])} if c else {}
+          def val(k):return e.get(k,{}).get('value')
+          def ref(k):return e.get(k,{}).get('secretRef')
+          oauth=val('GITHUB_APP_CLIENT_ID')=='Iv23lij1ARW37Q6GIgoF' and bool(ref('GITHUB_APP_CLIENT_SECRET'))
+          crypto=val('GITHUB_TOKEN_ENCRYPTION_MODE')=='strict' and bool(ref('GITHUB_TOKEN_ENCRYPTION_KEYS'))
+          workers=all(val(n)=='false' for n in ('GET_WORKER_ENABLED','GET_BACKFILL_ENABLED','GRADER_POLLING_ENABLED'))
+          volumes=tp.get('volumes') or []
+          mounts=c[0].get('volumeMounts') or [] if c else []
+          media_bound=any(v.get('storageType')=='AzureFile' and any(m.get('volumeName')==v.get('name') for m in mounts) for v in volumes)
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as out:
+              out.write('### Isolated migration-target read-only data-migration audit\n')
+              out.write('- Target database server Ready: '+str(db.get('state')=='Ready')+'\n')
+              out.write('- Target PostgreSQL major version 16: '+str(str(db.get('version','')).startswith('16'))+'\n')
+              out.write('- Both target database names provisioned: '+str(dbs_ready)+'\n')
+              out.write('- Target public network access: '+str((db.get('network') or {}).get('publicNetworkAccess','unreported'))+'\n')
+              out.write('- Broad Azure services firewall rule 0.0.0.0 present: '+str(wide)+' (security review required before user data)\n')
+              out.write('- Existing target media share and API mount: '+str(media_bound)+'\n')
+              out.write('- GitHub OAuth configured: '+str(oauth)+'\n')
+              out.write('- Strict token encryption configured: '+str(crypto)+'\n')
+              out.write('- Background processing disabled: '+str(workers)+'\n')
+              out.write('- No row count, DB contents or media content read; no target resources modified\n')
+          if not (db.get('state')=='Ready' and dbs_ready and media_bound and oauth and crypto and workers):
+              sys.exit('::error::Target prerequisites missing; no migration attempted.')
+          print('Target infrastructure read-only audit completed.')
+          PY
+      - name: Remove temporary metadata and log out
+        if: always()
+        shell: bash
+        run: |
+          rm -f "$RUNNER_TEMP"/target-*.json "$RUNNER_TEMP"/cli-error.log "$RUNNER_TEMP"/ca-cdmstd-api-c26m0911.json "$RUNNER_TEMP"/ca-cdmstd-grader-c26m0911.json
+          az logout -o none >/dev/null 2>&1 || true

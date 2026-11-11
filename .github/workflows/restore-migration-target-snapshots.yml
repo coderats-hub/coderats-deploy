@@ -1,0 +1,54 @@
+name: Restore verified source snapshots into isolated migration-target PostgreSQL
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/restore-migration-target-snapshots.yml"
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: coderats-migration-target-postgres-restore-one-time
+  cancel-in-progress: false
+
+jobs:
+  target-restore:
+    if: >-
+      github.repository == 'coderats-hub/coderats-deploy' &&
+      github.ref == 'refs/heads/main' &&
+      github.event_name == 'push' &&
+      github.event.head_commit.message == 'ci(migration): restore verified source snapshots to target once'
+    environment: migration-target
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      MIGRATION_RESOURCE_GROUP: rg-coderats-migration-c26m0911
+      MIGRATION_STAGE: TARGET_BACKUP_ONLY
+      IMPORT_TARGET_SNAPSHOTS: "YES"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Authenticate to new Azure subscription only
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Verify old and source snapshot archives; restore and preserve prior target databases
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          python3 -m py_compile scripts/migration-restore-target-db.py
+          python3 scripts/migration-restore-target-db.py
+      - name: Purge temporary archive files and Azure session
+        if: always()
+        shell: bash
+        run: |
+          rm -rf "$RUNNER_TEMP/private-source-restoration"
+          az logout -o none >/dev/null 2>&1 || true

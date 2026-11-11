@@ -73,8 +73,6 @@ def get_source_storage():
                     if v.get("storageType") == "AzureFile" and isinstance(v.get("storageName"), str)]
         azure_mounts = list(dict.fromkeys(declared))
         print("MEDIA_STAGE_SOURCE_USING_DECLARED_VOLUME_ONLY=true")
-    if len(azure_mounts) != 1:
-        raise RuntimeError("Original API media share mount not unique")
     env_id = props.get("managedEnvironmentId") or ""
     if not env_id.lower().startswith("/subscriptions/" + sid.lower() + "/") or not env_id:
         raise RuntimeError("Source environment identifier inconsistent")
@@ -82,10 +80,26 @@ def get_source_storage():
     print("MEDIA_STAGE_SOURCE_ENV_RESOLVED=true")
     bindings = az("containerapp", "env", "storage", "list", "--subscription", sid,
                   "-g", SOURCE_RG, "-n", env_name)
-    match = [
+    print("MEDIA_STAGE_SOURCE_ENV_BINDINGS_READABLE=true")
+    eligible = [
         entry for entry in bindings if isinstance(entry, dict) and
-        entry.get("name") == azure_mounts[0]
+        isinstance(((entry.get("properties") or {}).get("azureFile") or {}).get("shareName"), str) and
+        isinstance(((entry.get("properties") or {}).get("azureFile") or {}).get("accountName"), str)
     ]
+    if len(azure_mounts) == 1:
+        match = [entry for entry in eligible if entry.get("name") == azure_mounts[0]]
+    else:
+        # A disabled subscription may omit the entire Container App template.
+        # Only permit an unambiguous media-named existing environment storage binding.
+        match = [
+            entry for entry in eligible
+            if "media" in (str(entry.get("name") or "") + " " +
+                           str((entry.get("properties") or {}).get("azureFile", {}).get("shareName") or "")).lower()
+        ]
+        print("MEDIA_STAGE_SOURCE_FALLBACK_ENV_BINDING_SEARCH=true")
+        if not match and len(eligible) == 1:
+            match = eligible
+    print("MEDIA_STAGE_SOURCE_UNIQUE_BINDING=" + str(len(match) == 1).lower())
     if len(match) != 1:
         raise RuntimeError("Original Azure Files mount binding missing")
     print("MEDIA_STAGE_SOURCE_STORAGE_BINDING_MATCHED=true")

@@ -135,7 +135,8 @@ def get_source_storage():
         # environment storage binding may still expose its key.
         key = f.get("accountKey")
     if not isinstance(key, str) or len(key) < 40 or "*" in key:
-        raise RuntimeError("Source storage key unavailable on disabled subscription")
+        print("MEDIA_SOURCE_KEY_RECOVERED=false")
+        return name, share, None
     print("MEDIA_SOURCE_KEY_RECOVERED=true")
     return name, share, key
 
@@ -187,29 +188,57 @@ def main():
         expiry = run(["date", "-u", "-d", "+2 hours", "+%Y-%m-%dT%H:%MZ"], capture=True).strip()
         env = os.environ.copy()
         env["AZURE_STORAGE_ACCOUNT"] = source_account
-        env["AZURE_STORAGE_KEY"] = source_key
-        # Prove old data plane is readable before making any destination writes.
-        entries = az("storage", "file", "list", "--account-name", source_account,
-                     "--share-name", source_share, env=env)
+        if source_key is not None:
+            env["AZURE_STORAGE_KEY"] = source_key
+            auth = []
+            print("MEDIA_SOURCE_AUTH_METHOD=shared-key")
+        else:
+            # Microsoft Azure Files supports OAuth over FileREST with backup intent.
+            # This requires explicit file data-plane RBAC; Contributor is insufficient.
+            env.pop("AZURE_STORAGE_KEY", None)
+            auth = ["--auth-mode", "login", "--backup-intent"]
+            print("MEDIA_SOURCE_AUTH_METHOD=oauth-backup-intent")
+        try:
+            entries = az("storage", "file", "list", "--account-name", source_account,
+                         "--share-name", source_share, *auth, env=env)
+        except Exception:
+            if source_key is None:
+                raise RuntimeError("Source Azure Files OAuth read unavailable")
+            raise RuntimeError("Source Azure Files shared-key read unavailable")
         if not isinstance(entries, list) or not entries:
             raise RuntimeError("Source file share is unavailable or empty")
         dirs = {str(e.get("name")) for e in entries if isinstance(e, dict) and
                 (e.get("type") == "dir" or e.get("isDirectory") is True)}
-        # Some Azure CLI versions omit the 'type'; root contents still need
-        # some recognized CodeRats category to prevent accidental wrong-share copy.
         all_names = {str(e.get("name")) for e in entries if isinstance(e, dict)}
         if not (all_names | dirs) & EXPECTED_CATEGORIES:
             raise RuntimeError("Original media share does not contain expected category directories")
         print("MEDIA_SOURCE_DATA_PLANE_READABLE=true")
         print("MEDIA_SOURCE_ROOT_ENTRIES=" + str(len(entries)))
-        source_sas = run(["az","storage","share","generate-sas","--account-name",source_account,
-                          "--name",source_share,"--permissions","rl","--https-only",
-                          "--expiry",expiry,"--only-show-errors","-o","tsv"],
-                         env=env, capture=True).strip()
-        if not source_sas or "sig=" not in source_sas:
-            raise RuntimeError("Source read-only share SAS creation failed")
-        src = "https://" + source_account + ".file.core.windows.net/" + source_share + "?" + source_sas.lstrip("?")
         binary = azcopy_binary(root)
+        if source_key is not None:
+            source_sas = run(["az","storage","share","generate-sas","--account-name",source_account,
+                              "--name",source_share,"--permissions","rl","--https-only",
+                              "--expiry",expiry,"--only-show-errors","-o","tsv"],
+                             env=env, capture=True).strip()
+            if not source_sas or "sig=" not in source_sas:
+                raise RuntimeError("Source read-only share SAS creation failed")
+            src = "https://" + source_account + ".file.core.windows.net/" + source_share + "?" + source_sas.lstrip("?")
+        else:
+            local_media = root / "source-media"
+            local_media.mkdir(mode=0o700)
+            try:
+                run(["az", "storage", "file", "download-batch",
+                     "--account-name", source_account, "--source", source_share,
+                     "--destination", str(local_media), "--auth-mode", "login",
+                     "--backup-intent", "--no-progress", "--only-show-errors", "-o", "none"],
+                    env=env, timeout=7200)
+            except Exception:
+                raise RuntimeError("Source Azure Files OAuth download unavailable")
+            count = sum(1 for p in local_media.rglob("*") if p.is_file())
+            if count < 1:
+                raise RuntimeError("Source Azure Files OAuth download empty")
+            print("MEDIA_SOURCE_FILES_STAGED=" + str(count))
+            src = str(local_media / "*")
         temp_logs = root / "azcopy-logs"
         temp_logs.mkdir(mode=0o700)
         env2 = os.environ.copy()
@@ -246,6 +275,10 @@ if __name__ == "__main__":
             "Original source storage account not found uniquely",
             "Original source storage group unresolved",
             "Source storage key unavailable on disabled subscription",
+            "Source Azure Files OAuth read unavailable",
+            "Source Azure Files shared-key read unavailable",
+            "Source Azure Files OAuth download unavailable",
+            "Source Azure Files OAuth download empty",
             "Source file share is unavailable or empty",
             "Original media share does not contain expected category directories",
         }:

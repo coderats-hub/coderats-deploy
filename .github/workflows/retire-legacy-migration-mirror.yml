@@ -1,0 +1,243 @@
+name: Retire legacy CodeRats migration mirror (manual, isolated target only)
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "Audit first; delete only with an exact confirmation"
+        type: choice
+        required: true
+        default: audit
+        options:
+          - audit
+          - delete
+      confirmation:
+        description: "AUDIT_LEGACY_MIRROR or DELETE_LEGACY_MIRROR_C26M0911"
+        type: string
+        required: true
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: coderats-retire-legacy-migration-mirror
+  cancel-in-progress: false
+
+jobs:
+  retire:
+    if: >-
+      github.repository == 'coderats-hub/coderats-deploy' &&
+      github.ref == 'refs/heads/main' &&
+      github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    environment: migration-target
+    timeout-minutes: 40
+    env:
+      SID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      TID: ${{ secrets.AZURE_TENANT_ID }}
+      ACTION: ${{ inputs.action }}
+      CONFIRMATION: ${{ inputs.confirmation }}
+      RG: rg-coderats-migration-c26m0911
+      LEGACY_ENV: cae-coderatsmig-c26m0911
+      STANDARD_ENV: cae-coderatsmig-wp-c26m0911
+      LEGACY_WEB: ca-coderatsmig-web-c26m0911
+      LEGACY_API: ca-coderatsmig-api-c26m0911
+      LEGACY_GRADER: ca-coderatsmig-grader-c26m0911
+      STANDARD_WEB: ca-cdmstd-web-c26m0911
+      STANDARD_API: ca-cdmstd-api-c26m0911
+      STANDARD_GRADER: ca-cdmstd-grader-c26m0911
+      DB: psql-coderatsmig-c26m0911
+      ACR: crcoderatsmigc26m0911
+      STORAGE: stcoderatsmigc26m0911
+
+    steps:
+      - name: Validate manual action and protected destination account
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$ACTION:$CONFIRMATION" in
+            audit:AUDIT_LEGACY_MIRROR|delete:DELETE_LEGACY_MIRROR_C26M0911) ;;
+            *) echo "::error::Invalid action/confirmation pair."; exit 1 ;;
+          esac
+          [[ "$SID" == "da3650a9-e291-43f1-ae4b-9dcc8ff84239" ]] || {
+            echo "::error::Unexpected target subscription."; exit 1;
+          }
+          [[ "$TID" == "1cf74c7e-fcd9-46f7-8a9d-e699d3529003" ]] || {
+            echo "::error::Unexpected target tenant."; exit 1;
+          }
+
+      - name: Authenticate only to migration-target (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Collect read-only resource inventory and destination health
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$(az account show --query id -o tsv --only-show-errors)" == "$SID" ]]
+          [[ "$(az account show --query tenantId -o tsv --only-show-errors)" == "$TID" ]]
+          [[ "$(az group show --subscription "$SID" -n "$RG" --query name -o tsv --only-show-errors)" == "$RG" ]]
+          az containerapp env show --subscription "$SID" -g "$RG" -n "$LEGACY_ENV" --only-show-errors -o json > "$RUNNER_TEMP/legacy-env.json"
+          az containerapp env show --subscription "$SID" -g "$RG" -n "$STANDARD_ENV" --only-show-errors -o json > "$RUNNER_TEMP/standard-env.json"
+          az containerapp list --subscription "$SID" -g "$RG" --only-show-errors -o json > "$RUNNER_TEMP/apps.json"
+          az containerapp job list --subscription "$SID" -g "$RG" --only-show-errors -o json > "$RUNNER_TEMP/jobs.json"
+          # These are SHARED resources. Verify they exist, but never mutate them.
+          az postgres flexible-server show --subscription "$SID" -g "$RG" -n "$DB" --query name -o tsv --only-show-errors > /dev/null
+          az acr show --subscription "$SID" -g "$RG" -n "$ACR" --query name -o tsv --only-show-errors > /dev/null
+          az storage account show --subscription "$SID" -g "$RG" -n "$STORAGE" --query name -o tsv --only-show-errors > /dev/null
+          az identity show --subscription "$SID" -g "$RG" -n id-coderatsmig-api-c26m0911 --query id -o tsv --only-show-errors > /dev/null
+          az identity show --subscription "$SID" -g "$RG" -n id-coderatsmig-grader-c26m0911 --query id -o tsv --only-show-errors > /dev/null
+          python3 - <<'PY'
+          import json, os, sys
+          from pathlib import Path
+          root = Path(os.environ["RUNNER_TEMP"])
+          load = lambda name: json.loads((root / name).read_text())
+          old, new = load("legacy-env.json"), load("standard-env.json")
+          apps, jobs = load("apps.json"), load("jobs.json")
+          stop = lambda reason: sys.exit("::error::" + reason)
+          old_id, new_id = str(old.get("id") or "").lower(), str(new.get("id") or "").lower()
+          expected_old = {os.environ[x] for x in ("LEGACY_WEB", "LEGACY_API", "LEGACY_GRADER")}
+          expected_new = {os.environ[x] for x in ("STANDARD_WEB", "STANDARD_API", "STANDARD_GRADER")}
+          if not old_id or not new_id or old_id == new_id:
+              stop("Missing or identical environment IDs.")
+          if old.get("name") != os.environ["LEGACY_ENV"] or new.get("name") != os.environ["STANDARD_ENV"]:
+              stop("Unexpected Container Apps Environment identity.")
+          old_p, new_p = old.get("properties") or {}, new.get("properties") or {}
+          if old_p.get("defaultDomain") != "greenground-5275c6f5.brazilsouth.azurecontainerapps.io":
+              stop("Old environment domain does not match expected legacy origin.")
+          if new_p.get("defaultDomain") != "victoriousocean-99a629e7.brazilsouth.azurecontainerapps.io":
+              stop("Standard environment domain does not match approved official origin.")
+          if new_p.get("environmentMode") != "WorkloadProfiles" or new_p.get("provisioningState") != "Succeeded":
+              stop("Official Standard environment is not ready.")
+          if not isinstance(apps, list) or not isinstance(jobs, list):
+              stop("Could not inventory apps and jobs.")
+          def env_id(p):
+              props = p.get("properties") or {}
+              return str(props.get("environmentId") or props.get("managedEnvironmentId") or "").lower()
+          if any(not env_id(x) for x in apps + jobs):
+              stop("At least one app/job has an unknown environment; refusing deletion.")
+          by_name = {x.get("name"): x for x in apps}
+          if len(by_name) != len(apps) or any(n not in by_name for n in expected_old | expected_new):
+              stop("Missing or duplicate expected applications; review live inventory.")
+          legacy_members = {x["name"] for x in apps if env_id(x) == old_id}
+          if legacy_members != expected_old:
+              stop("Legacy environment contains unexpected or missing applications.")
+          if any(env_id(x) == old_id for x in jobs):
+              stop("A Container Apps Job still depends on the old environment.")
+          for name in expected_old:
+              if env_id(by_name[name]) != old_id:
+                  stop("Legacy app is no longer bound to expected old environment.")
+          for name in expected_new:
+              app = by_name[name]
+              if env_id(app) != new_id:
+                  stop("Official app is not bound to Standard environment.")
+              p = app.get("properties") or {}
+              if p.get("runningStatus") != "Running" or not p.get("latestRevisionName") or p.get("latestRevisionName") != p.get("latestReadyRevisionName"):
+                  stop("Official app is not running its latest ready revision.")
+              ingress = (p.get("configuration") or {}).get("ingress") or {}
+              if ingress.get("external") is not (name == os.environ["STANDARD_WEB"]):
+                  stop("Official app ingress differs from expected topology.")
+          ingress = ((by_name[os.environ["STANDARD_WEB"]].get("properties") or {}).get("configuration") or {}).get("ingress") or {}
+          if ingress.get("fqdn") != "ca-cdmstd-web-c26m0911.victoriousocean-99a629e7.brazilsouth.azurecontainerapps.io":
+              stop("Official public Web FQDN mismatch.")
+          print("Preflight OK: exactly three old apps, no old jobs; all three official apps healthy.")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as out:
+              out.write("### Legacy mirror retirement preflight\n")
+              out.write("- Scope: ONLY three old apps + one old Container Apps Environment\n")
+              out.write("- Old environment contains exactly Web, API, Grader; no jobs\n")
+              out.write("- Official Standard Web/API/Grader: Running, latest ready revision, expected ingress\n")
+              out.write("- Shared database, ACR, storage and managed identities: present; NEVER deleted\n")
+              out.write("- Source DEV (coderats.club), DNS, Terraform and data: untouched\n")
+          PY
+          status="$(curl --silent --show-error --output /dev/null --max-time 20 --write-out '%{http_code}' \
+            https://ca-cdmstd-web-c26m0911.victoriousocean-99a629e7.brazilsouth.azurecontainerapps.io/health || true)"
+          [[ "$status" == "200" ]] || { echo "::error::Official Web /health is not HTTP 200."; exit 1; }
+          auth="$(curl --silent --show-error --output /dev/null --max-time 20 --write-out '%{http_code}' \
+            https://ca-cdmstd-web-c26m0911.victoriousocean-99a629e7.brazilsouth.azurecontainerapps.io/api/v1/auth/me || true)"
+          [[ "$auth" == "401" ]] || { echo "::error::Official API proxy auth check is not HTTP 401."; exit 1; }
+          echo "- Public /health HTTP 200 and anonymous /api/v1/auth/me HTTP 401" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Audit-only result (no changes)
+        if: ${{ inputs.action == 'audit' }}
+        shell: bash
+        run: |
+          echo "- Action: AUDIT ONLY; no Azure resource modified." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Delete the three explicitly allow-listed legacy Container Apps
+        if: ${{ inputs.action == 'delete' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # No wildcard, no resource-group delete, no database/storage/registry/identity operations.
+          for app in "$LEGACY_WEB" "$LEGACY_API" "$LEGACY_GRADER"; do
+            az containerapp delete --subscription "$SID" -g "$RG" -n "$app" \
+              --yes --only-show-errors --output none
+            echo "Deleted old app: $app"
+          done
+          az containerapp list --subscription "$SID" -g "$RG" --only-show-errors -o json > "$RUNNER_TEMP/apps-after.json"
+          az containerapp job list --subscription "$SID" -g "$RG" --only-show-errors -o json > "$RUNNER_TEMP/jobs-after.json"
+          python3 - <<'PY'
+          import json, os, sys
+          from pathlib import Path
+          root = Path(os.environ["RUNNER_TEMP"])
+          old_id = json.loads((root / "legacy-env.json").read_text())["id"].lower()
+          apps = json.loads((root / "apps-after.json").read_text())
+          jobs = json.loads((root / "jobs-after.json").read_text())
+          if not isinstance(apps, list) or not isinstance(jobs, list):
+              sys.exit("::error::Cannot safely verify remaining resources.")
+          old_names = {os.environ[x] for x in ("LEGACY_WEB", "LEGACY_API", "LEGACY_GRADER")}
+          new_names = {os.environ[x] for x in ("STANDARD_WEB", "STANDARD_API", "STANDARD_GRADER")}
+          if old_names & {x.get("name") for x in apps}:
+              sys.exit("::error::Legacy app deletion incomplete; old environment preserved.")
+          if not new_names.issubset({x.get("name") for x in apps}):
+              sys.exit("::error::Official app unexpectedly absent; old environment preserved.")
+          for item in apps + jobs:
+              p = item.get("properties") or {}
+              env = str(p.get("environmentId") or p.get("managedEnvironmentId") or "").lower()
+              if not env or env == old_id:
+                  sys.exit("::error::Unknown or remaining old environment dependency; environment preserved.")
+          print("No remaining apps/jobs reference legacy environment.")
+          PY
+
+      - name: Delete only the now-empty legacy Container Apps Environment
+        if: ${{ inputs.action == 'delete' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          az containerapp env delete --subscription "$SID" -g "$RG" -n "$LEGACY_ENV" \
+            --yes --only-show-errors --output none
+          az containerapp env list --subscription "$SID" -g "$RG" --only-show-errors -o json > "$RUNNER_TEMP/envs-after.json"
+          python3 - <<'PY'
+          import json, os, sys
+          from pathlib import Path
+          envs = json.loads((Path(os.environ["RUNNER_TEMP"]) / "envs-after.json").read_text())
+          names = {x.get("name") for x in envs}
+          if os.environ["LEGACY_ENV"] in names or os.environ["STANDARD_ENV"] not in names:
+              sys.exit("::error::Old environment still present or Standard environment missing.")
+          print("Legacy environment removed; Standard environment preserved.")
+          PY
+          echo "- Deleted legacy Web/API/Grader and legacy CAE ONLY." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Post-deletion official endpoint health
+        if: ${{ inputs.action == 'delete' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          health="$(curl --silent --show-error --output /dev/null --max-time 20 --write-out '%{http_code}' \
+            https://ca-cdmstd-web-c26m0911.victoriousocean-99a629e7.brazilsouth.azurecontainerapps.io/health || true)"
+          [[ "$health" == "200" ]] || { echo "::error::Official Web post-delete health not HTTP 200."; exit 1; }
+          echo "- Official Web /health still HTTP 200 after cleanup." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Scrub temporary inventory and sign out
+        if: always()
+        shell: bash
+        run: |
+          rm -f "$RUNNER_TEMP/legacy-env.json" "$RUNNER_TEMP/standard-env.json" \
+            "$RUNNER_TEMP/apps.json" "$RUNNER_TEMP/jobs.json" \
+            "$RUNNER_TEMP/apps-after.json" "$RUNNER_TEMP/jobs-after.json" \
+            "$RUNNER_TEMP/envs-after.json"
+          az logout --output none >/dev/null 2>&1 || true

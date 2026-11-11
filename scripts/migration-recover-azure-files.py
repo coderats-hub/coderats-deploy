@@ -49,6 +49,7 @@ def get_source_storage():
     app = az("containerapp", "show", "--subscription", sid, "-g", SOURCE_RG, "-n", SOURCE_API)
     if app.get("name") != SOURCE_API:
         raise RuntimeError("Unexpected original API identity")
+    print("MEDIA_STAGE_SOURCE_API_RESOLVED=true")
     props = app.get("properties") or {}
     template = props.get("template") or {}
     container = (template.get("containers") or [])
@@ -56,6 +57,8 @@ def get_source_storage():
     if len(container) != 1:
         raise RuntimeError("Ambiguous source API mount layout")
     mounts = container[0].get("volumeMounts") or []
+    print("MEDIA_STAGE_SOURCE_API_AZUREFILE_DECLARED=" + str(any(v.get("storageType") == "AzureFile" for v in volumes.values())).lower())
+    print("MEDIA_STAGE_SOURCE_API_VOLUME_MOUNTS_PRESENT=" + str(bool(mounts)).lower())
     azure_mounts = [
         volumes[m.get("volumeName")].get("storageName")
         for m in mounts
@@ -69,6 +72,7 @@ def get_source_storage():
     if not env_id.lower().startswith("/subscriptions/" + sid.lower() + "/") or not env_id:
         raise RuntimeError("Source environment identifier inconsistent")
     env_name = env_id.rstrip("/").rsplit("/", 1)[-1]
+    print("MEDIA_STAGE_SOURCE_ENV_RESOLVED=true")
     bindings = az("containerapp", "env", "storage", "list", "--subscription", sid,
                   "-g", SOURCE_RG, "-n", env_name)
     match = [
@@ -77,19 +81,27 @@ def get_source_storage():
     ]
     if len(match) != 1:
         raise RuntimeError("Original Azure Files mount binding missing")
+    print("MEDIA_STAGE_SOURCE_STORAGE_BINDING_MATCHED=true")
     f = (match[0].get("properties") or {}).get("azureFile") or {}
     name = f.get("accountName")
     share = f.get("shareName")
     if not safe_name(name) or not safe_name(share):
         raise RuntimeError("Unexpected source media storage identity")
-    accounts = az("storage", "account", "list", "--subscription", sid)
+    try:
+        accounts = az("storage", "account", "list", "--subscription", sid, "-g", SOURCE_RG)
+    except Exception:
+        accounts = []
+    if not any(isinstance(x, dict) and x.get("name") == name for x in accounts):
+        accounts = az("storage", "account", "list", "--subscription", sid)
     found = [entry for entry in accounts if isinstance(entry, dict) and entry.get("name") == name]
     if len(found) != 1:
         raise RuntimeError("Original source storage account not found uniquely")
+    print("MEDIA_STAGE_SOURCE_ACCOUNT_RESOLVED=true")
     resource_id = found[0].get("id") or ""
     rg = resource_id.split("/resourceGroups/", 1)[1].split("/", 1)[0] if "/resourceGroups/" in resource_id else ""
     if not rg:
         raise RuntimeError("Original source storage group unresolved")
+    print("MEDIA_STAGE_SOURCE_ACCOUNT_RESOURCEGROUP_RESOLVED=true")
     key = None
     try:
         response = az("storage", "account", "keys", "list", "--subscription", sid,
@@ -97,6 +109,7 @@ def get_source_storage():
         if isinstance(response, list) and response:
             key = response[0].get("value")
     except Exception:
+        print("MEDIA_STAGE_SOURCE_ARM_LISTKEYS_DENIED=true")
         # Disabled subscriptions can block ARM listKeys. Existing Container Apps
         # environment storage binding may still expose its key.
         key = f.get("accountKey")
@@ -200,10 +213,21 @@ if __name__ == "__main__":
         main()
     except Exception as exc:
         message = str(exc)
-        if message in (
+        if message in {
+            "Unexpected source subscription identity",
+            "Original OIDC scope mismatch",
+            "Unexpected original API identity",
+            "Ambiguous source API mount layout",
+            "Original API media share mount not unique",
+            "Source environment identifier inconsistent",
+            "Original Azure Files mount binding missing",
+            "Unexpected source media storage identity",
+            "Original source storage account not found uniquely",
+            "Original source storage group unresolved",
             "Source storage key unavailable on disabled subscription",
             "Source file share is unavailable or empty",
-            "Original media share does not contain expected category directories"):
+            "Original media share does not contain expected category directories",
+        }:
             print("::error::MEDIA_RECOVERY_BLOCKED: " + message)
         else:
             print("::error::MEDIA_RECOVERY_BLOCKED: Azure media access or secure transport check failed.")

@@ -57,9 +57,11 @@ target_backup = workflows / "backup-migration-target-before-restore.yml"
 target_text = target_backup.read_text()
 target_data = yaml.safe_load(target_text)
 target_events = target_data.get("on", target_data.get(True, {}))
-assert isinstance(target_events, dict) and set(target_events) == {"workflow_dispatch"}, (
-    "Target DB rollback backup must never be triggered by push or PR"
+assert isinstance(target_events, dict) and set(target_events) == {"workflow_dispatch", "push"}, (
+    "Target DB rollback backup must be manual or exact one-time gated main push"
 )
+assert target_events["push"] == {"branches": ["main"], "paths": [".github/workflows/backup-migration-target-before-restore.yml"]}
+assert "github.event.head_commit.message == 'ci(migration): one-time target pre-restore backup'" in target_text
 assert "environment: migration-target" in target_text
 assert "github.ref == 'refs/heads/main'" in target_text
 assert "BACKUP_TARGET_BEFORE_RESTORE" in target_text

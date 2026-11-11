@@ -76,5 +76,32 @@ compile_check = subprocess.run(["python3", "-m", "py_compile", str(target_python
                                capture_output=True, text=True, check=False)
 assert compile_check.returncode == 0, "Target backup Python syntax invalid"
 
+# Keep the legacy mirror retirement workflow explicitly opt-in and syntax-checked.
+legacy_retirement = workflows / "retire-legacy-migration-mirror.yml"
+legacy_text = legacy_retirement.read_text()
+legacy_data = yaml.safe_load(legacy_text)
+legacy_events = legacy_data.get("on", legacy_data.get(True, {}))
+assert isinstance(legacy_events, dict) and set(legacy_events) == {"workflow_dispatch"}, (
+    "Legacy retirement must never be triggered by push or schedule"
+)
+assert "environment: migration-target" in legacy_text
+assert "github.ref == 'refs/heads/main'" in legacy_text
+assert "default: audit" in legacy_text
+assert "DELETE_LEGACY_MIRROR_C26M0911" in legacy_text
+assert "az containerapp delete" in legacy_text
+assert "az containerapp env delete" in legacy_text
+assert "az group delete" not in legacy_text
+assert "terraform" not in legacy_text.lower()
+for job in legacy_data["jobs"].values():
+    for step in job.get("steps", []):
+        script = step.get("run")
+        if isinstance(script, str):
+            syntax = subprocess.run(["bash", "-n"], input=script, text=True,
+                                    capture_output=True, check=False)
+            assert syntax.returncode == 0, (
+                f"Legacy retirement bash syntax invalid at {step.get('name')}: "
+                f"{syntax.stderr}"
+            )
+
 print("PASS: public dispatcher has protected main/DEV-only entrypoint, private App checkout, "
       "DEV guards and public hosted-runner builds; all Bash scripts parse.")

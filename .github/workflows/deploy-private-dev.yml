@@ -728,3 +728,5 @@ jobs:
         run: |
           rm -rf app-src || true
           az logout >/dev/null 2>&1 || true
+
+# Authorized 2026-11-11: first official API release to the new Brazil South subscription.

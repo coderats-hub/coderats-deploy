@@ -52,5 +52,29 @@ for name in ("dev-container.yml", "dev-get-worker.yml", "validate-templates.yml"
                     f"{result.stderr}"
                 )
 
+# Keep isolated pre-restore backup manual-only and syntax-checked in public CI.
+target_backup = workflows / "backup-migration-target-before-restore.yml"
+target_text = target_backup.read_text()
+target_data = yaml.safe_load(target_text)
+target_events = target_data.get("on", target_data.get(True, {}))
+assert isinstance(target_events, dict) and set(target_events) == {"workflow_dispatch"}, (
+    "Target DB rollback backup must never be triggered by push or PR"
+)
+assert "environment: migration-target" in target_text
+assert "github.ref == 'refs/heads/main'" in target_text
+assert "BACKUP_TARGET_BEFORE_RESTORE" in target_text
+assert "source" not in target_data["jobs"], "Target backup cannot have source environment jobs"
+for job in target_data["jobs"].values():
+    for step in job.get("steps", []):
+        script = step.get("run")
+        if isinstance(script, str):
+            syntax = subprocess.run(["bash", "-n"], input=script, text=True,
+                                    capture_output=True, check=False)
+            assert syntax.returncode == 0, f"Target backup bash invalid: {syntax.stderr}"
+target_python = root / "scripts" / "migration-backup-target-db.py"
+compile_check = subprocess.run(["python3", "-m", "py_compile", str(target_python)],
+                               capture_output=True, text=True, check=False)
+assert compile_check.returncode == 0, "Target backup Python syntax invalid"
+
 print("PASS: public dispatcher has protected main/DEV-only entrypoint, private App checkout, "
       "DEV guards and public hosted-runner builds; all Bash scripts parse.")

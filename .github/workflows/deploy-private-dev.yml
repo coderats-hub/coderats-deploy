@@ -571,6 +571,7 @@ jobs:
           cae=cae-coderatsmig-wp-c26m0911
           api=ca-cdmstd-api-c26m0911
           web=ca-cdmstd-web-c26m0911
+          grader=ca-cdmstd-grader-c26m0911
           # Explicit allowlisting prevents accidental deployment into the exhausted legacy subscription.
           [[ "$EXPECTED_SUBSCRIPTION" == "da3650a9-e291-43f1-ae4b-9dcc8ff84239" ]] || exit 1
           [[ "$EXPECTED_TENANT" == "1cf74c7e-fcd9-46f7-8a9d-e699d3529003" ]] || exit 1
@@ -584,11 +585,21 @@ jobs:
           api_external="$(az containerapp show -g "$rg" -n "$api" --query properties.configuration.ingress.external -o tsv)"
           web_fqdn="$(az containerapp show -g "$rg" -n "$web" --query properties.configuration.ingress.fqdn -o tsv)"
           web_external="$(az containerapp show -g "$rg" -n "$web" --query properties.configuration.ingress.external -o tsv)"
+          grader_fqdn="$(az containerapp show -g "$rg" -n "$grader" --query properties.configuration.ingress.fqdn -o tsv)"
+          grader_external="$(az containerapp show -g "$rg" -n "$grader" --query properties.configuration.ingress.external -o tsv)"
+          grader_image="$(az containerapp show -g "$rg" -n "$grader" --query properties.template.containers[0].image -o tsv)"
+          grader_latest="$(az containerapp show -g "$rg" -n "$grader" --query properties.latestRevisionName -o tsv)"
+          grader_ready="$(az containerapp show -g "$rg" -n "$grader" --query properties.latestReadyRevisionName -o tsv)"
           [[ "$api_fqdn" == "$api.internal.$domain" ]] || exit 1
           [[ "$api_external" == "false" || "$api_external" == "False" ]] || exit 1
           [[ "$web_fqdn" == "$web.$domain" ]] || exit 1
           [[ "$web_external" == "true" || "$web_external" == "True" ]] || exit 1
+          [[ "$grader_fqdn" == "$grader.internal.$domain" ]] || { echo "::error::Official private Grader hostname mismatch"; exit 1; }
+          [[ "$grader_external" == "false" || "$grader_external" == "False" ]] || { echo "::error::Grader ingress must remain private"; exit 1; }
+          [[ "$grader_image" == "$registry.azurecr.io/api-grader-coderats:"* || "$grader_image" == "$registry.azurecr.io/api-grader-coderats@sha256:"* ]] || { echo "::error::Unexpected Grader image"; exit 1; }
+          [[ -n "$grader_latest" && "$grader_latest" == "$grader_ready" ]] || { echo "::error::Official Grader revision not ready"; exit 1; }
           echo "TARGET_API_ORIGIN=https://$api_fqdn" >> "$GITHUB_ENV"
+          echo "TARGET_GRADER_ORIGIN=https://$grader_fqdn" >> "$GITHUB_ENV"
           echo "TARGET_WEB_ORIGIN=https://$web_fqdn" >> "$GITHUB_ENV"
           echo "Official Web and private API verified in the new Azure subscription." >> "$GITHUB_STEP_SUMMARY"
 
@@ -665,13 +676,16 @@ jobs:
               echo "::error::Web revision update failed; raw output withheld"; exit 1;
             }
           else
-            # Preserve GitHub App secrets, database, media and grader bindings.
+            # Preserve GitHub App secrets, database, media and shared Grader token.
+            # Repair the internal Grader origin and enable result synchronization.
             az containerapp update -g "$rg" -n "$app" --image "$image" \
               --set-env-vars \
                 "FRONTEND_URL=https://coderats.club" \
                 "GITHUB_OAUTH_REDIRECT_URI=https://coderats.club/login/oauth2/code/github" \
                 "CORS_ALLOWED_ORIGINS=https://coderats.club,https://www.coderats.club" \
                 "SERVER_SERVLET_SESSION_COOKIE_SECURE=true" \
+                "GRADER_API_URL=$TARGET_GRADER_ORIGIN" \
+                "GRADER_POLLING_ENABLED=true" \
               --only-show-errors -o none >"$RUNNER_TEMP/private-official-update.log" 2>&1 || {
               echo "::error::API revision update failed; raw output withheld"; exit 1;
             }
@@ -681,6 +695,12 @@ jobs:
             latest="$(az containerapp show -g "$rg" -n "$app" --query properties.latestRevisionName -o tsv)"
             ready="$(az containerapp show -g "$rg" -n "$app" --query properties.latestReadyRevisionName -o tsv)"
             if [[ "$actual" == "$image" && -n "$latest" && "$latest" == "$ready" ]]; then
+              if [[ "$SERVICE" == api ]]; then
+                effective_grader="$(az containerapp show -g "$rg" -n "$app" --query "properties.template.containers[0].env[?name=='GRADER_API_URL'].value | [0]" -o tsv)"
+                effective_polling="$(az containerapp show -g "$rg" -n "$app" --query "properties.template.containers[0].env[?name=='GRADER_POLLING_ENABLED'].value | [0]" -o tsv)"
+                [[ "$effective_grader" == "$TARGET_GRADER_ORIGIN" && "$effective_polling" == true ]] || { echo "::error::API Grader origin or polling configuration did not take effect"; exit 1; }
+                echo "Private Grader origin and evaluation polling enabled on API revision." >> "$GITHUB_STEP_SUMMARY"
+              fi
               echo "Official Azure revision ready: $SERVICE" >> "$GITHUB_STEP_SUMMARY"
               echo "Private source SHA: $SOURCE_SHA" >> "$GITHUB_STEP_SUMMARY"
               exit 0

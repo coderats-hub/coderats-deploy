@@ -34,6 +34,12 @@ for name in ("dev-container.yml", "dev-get-worker.yml", "validate-templates.yml"
         assert "rg-coderats-migration-c26m0911" in text
         assert "ca-cdmstd-web-c26m0911" in text
         assert "ca-cdmstd-api-c26m0911" in text
+        assert "ca-cdmstd-grader-c26m0911" in text
+        assert "grader.internal.$domain" in text
+        assert "TARGET_GRADER_ORIGIN=https://$grader_fqdn" in text
+        assert '"GRADER_API_URL=$TARGET_GRADER_ORIGIN"' in text
+        assert '"GRADER_POLLING_ENABLED=true"' in text
+        assert "API Grader origin or polling configuration did not take effect" in text
         assert "NEXT_PUBLIC_API_URL=https://coderats.club" in text
         assert "GITHUB_OAUTH_REDIRECT_URI=https://coderats.club/login/oauth2/code/github" in text
         assert "rg-coderats-base-dev" not in text

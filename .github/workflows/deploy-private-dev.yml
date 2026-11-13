@@ -1,3 +1,4 @@
+# 2026-11-13: Retry authorized API release after fixing organization role tests (api PR #230, develop 878802756eea62d99405ce0fe9ef24f0caa492b3).
 # 2026-11-13: Authorized API release after organization administrator roles PR #229 merged to develop (f4026426521395e435011079697c43c1e1d63c99).
 # 2026-11-10: Authorized DEV frontend release for optimistic comment likes, accurate thread rail, author-pill removal and scoped streak invalidation (web PR #179); web-coderats-base@develop 036b418f15d0f0fc4b6b0398cf66bc301eb0293d.
 # 2026-11-10: Authorized DEV frontend release for sidebar active-item dot removal (web PR #178); web-coderats-base@develop dcbc6b997763d6f8aabd41d1db237e7efed08c50.

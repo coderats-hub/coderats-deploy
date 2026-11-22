@@ -1,25 +1,30 @@
-# CodeRats observability (DEV)
+# CodeRats observability
 
-This change adds four **real Azure Workbook templates**, their idempotent publisher and a **small, read-only GitHub Actions benchmark**.
+Type: Runbook · Scope: coderats-deploy · Verified: 2026-11-21 @ coderats-deploy c6dd66b
 
-## Azure Workbooks
-- Run the protected `Publish CodeRats DEV Azure Workbooks` workflow from `main`; enter `PUBLISH_WORKBOOKS_DEV`.
-- Uses existing `dev` Azure OIDC credentials, finds the **single** Log Analytics workspace in `rg-coderats-base-dev`, and creates four shared Azure Workbooks.
-- Open Azure Portal > Monitor > Workbooks; find `CodeRats | Saúde e volume`, `CodeRats | API Base e dependências`, `CodeRats | Frontend`, `CodeRats | Grader`.
-- Requires the federated identity to have `Microsoft.Insights/workbooks/write` and Log Analytics workspace read permissions in DEV. Failures in access control are expected until these are granted.
-- Provisioning is idempotent by UUID and never writes Terraform state. If later adding Terraform ownership, **import** existing workbook resources rather than creating duplicates.
-- The tables query `AppRequests`, `AppDependencies`, `AppMetrics` and `AppExceptions`; data is **not created automatically** by the workbook. Instrument service role names, server/browser requests, downstream dependencies, and custom cache/business metrics before expecting full dashboards.
-- Do not log personal data, authentication headers, private source or user-provided prompts.
+**Not usable.** Every workflow here uses the retired GitHub environment `dev` and resource group
+`rg-coderats-base-dev`. They cannot reach production (`migration-target`) until they are ported; do not run
+them, and do not point them at production without a separate change.
 
-## Safe baseline benchmark
-- Set the protected `dev` environment variables `AZURE_DEV_WEB_URL`, `AZURE_DEV_API_URL` and `AZURE_DEV_GRADER_URL` to the **real DEV HTTPS Container Apps origins**. Use origins only (no paths, query strings or credentials).
-- Run `CodeRats DEV API baseline benchmark` from `main`, select service and enter `BENCHMARK_DEV`.
-- 3 preflight requests plus 15 measured requests, sequential, 150 ms gaps, 8s timeout. Only `GET /health` (web, grader) or `GET /actuator/health` (API). Target allowlist only `*.azurecontainerapps.io` and no custom production domain.
-- A sanitized aggregate is published to Actions summary plus a 14-day JSON artifact: count, error rate, p50/p95/mean duration and status counts.
-- **This does not measure reduction in requests.** It is a safe initial latency/availability baseline. To prove optimization outcomes, add isolated, authenticated synthetic journey tests with instrumented request counting, fixed seed data, pinned before/after releases and multiple repeated runs. Those cannot safely run against production or without a supported test fixture.
+## Contents
 
-## Deployment/limitations
-- GitHub's repository connector does **not** expose an Azure control-plane login or workflow dispatch operation. Files pushed here are not evidence that Azure workbooks have been provisioned.
-- Existing infra Terraform declares workspace/App Insights; verify actual resources and ingestion in Azure.
-- Dashboard chart data may be empty until proper OpenTelemetry/App Insights export is installed. Health benchmark metrics should not be interpreted as complete end-to-end performance indicators.
-- Workflows deliberately avoid schedules or push triggers; a maintainer triggers from protected `main` and reviews permission scopes first.
+| Item | What it does |
+| --- | --- |
+| `workbooks/*.json`, `workbooks/manifest.json` | Four Azure Workbook templates (`CodeRats \| Saúde e volume`, `API Base e dependências`, `Frontend`, `Grader`) querying `AppRequests`, `AppDependencies`, `AppMetrics`, `AppExceptions`. Fixed GUIDs make publishing idempotent. |
+| `publish-workbooks-dev.yml` + `scripts/publish_workbooks.py` | Creates the workbooks in the single Log Analytics workspace of the configured resource group. Dispatch input `PUBLISH_WORKBOOKS_DEV`. |
+| `benchmark-dev.yml` + `scripts/benchmark_dev.py` | Read-only latency baseline per service (`web`, `api`, `grader`): 3 warm-up + 15 sequential `GET /health` (API: `/actuator/health`) requests; publishes an aggregate (count, error rate, p50/p95/mean, status counts) to the job summary and a 14-day JSON artifact. Dispatch input `BENCHMARK_DEV`. Measures availability/latency only, not request reduction. |
+| `export-azure-observability-dev.yml` + `scripts/export_azure_observability_dev.py` | Exports observability and cost data for 7/14/30 days. |
+
+Triggers: `workflow_dispatch` on `main`, and also `push` to `main` when a commit message starts with
+`ci(dev): provision observability and benchmark` (workbooks, benchmark) or `ci(observability): run azure export`
+(export) and the push changes the matching paths.
+
+## Porting checklist
+
+- Switch environment and resource group to production and grant the OIDC identity
+  `Microsoft.Insights/workbooks/write` plus Log Analytics read; import existing workbooks into Terraform rather
+  than duplicating them if Terraform takes ownership.
+- Benchmark targets are Container App FQDNs; the script accepts only `*.azurecontainerapps.io` and rejects
+  `coderats.club`.
+- Dashboards stay empty until services export telemetry (role names, requests, dependencies, custom metrics).
+- Never log personal data, auth headers, private source or user prompts.

@@ -1,0 +1,128 @@
+# Read-only production investigation; never print tokens, secret names/values or raw application logs.
+name: Diagnose official Grader AI configuration (read-only)
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/diagnose-official-grader-ai.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  diagnose:
+    if: >-
+      github.repository == 'coderats-hub/coderats-deploy' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' ||
+       github.event.head_commit.message == 'ci(migration): diagnose grader AI')
+    environment: migration-target
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Authenticate to official Azure subscription
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Check only allowlisted API/Grader configuration and summarized failure signals
+        env:
+          EXPECTED_SUBSCRIPTION: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rg=rg-coderats-migration-c26m0911
+          api=ca-cdmstd-api-c26m0911
+          grader=ca-cdmstd-grader-c26m0911
+          if [[ "$(az account show --query id -o tsv)" != "$EXPECTED_SUBSCRIPTION" ]]; then
+            echo "::error::Official Azure subscription mismatch"; exit 1
+          fi
+          dir="$(mktemp -d)"
+          trap 'rm -rf "$dir"' EXIT
+          az containerapp show -g "$rg" -n "$api" -o json > "$dir/api.json"
+          az containerapp show -g "$rg" -n "$grader" -o json > "$dir/grader.json"
+          python3 - "$dir/api.json" "$dir/grader.json" <<'PY'
+          import json, re, sys
+          sources = [('api',sys.argv[1],('GRADER_API_URL','GRADER_SERVICE_TOKEN','GRADER_POLLING_ENABLED')),
+                     ('grader',sys.argv[2],('OPENAI_API_KEY','OPENAI_MODEL','AUTOGRADER_INTEGRATION_TOKEN'))]
+          for role,path,needed in sources:
+              data=json.load(open(path))
+              props=data.get('properties') or {}
+              latest=props.get('latestRevisionName')
+              ready=props.get('latestReadyRevisionName')
+              print('RUNTIME',role,'revision_ready=',bool(latest and latest==ready))
+              containers=((props.get('template') or {}).get('containers') or [])
+              env={e.get('name'):e for c in containers for e in c.get('env',[])}
+              for key in needed:
+                  field=env.get(key)
+                  if not field:
+                      status='MISSING'
+                  elif field.get('secretRef'):
+                      status='DECLARED_SECRET_REF'
+                  elif field.get('value') is not None:
+                      status='NONEMPTY_VALUE' if str(field.get('value')).strip() else 'EMPTY_VALUE'
+                  else:
+                      status='DECLARED_UNKNOWN'
+                  print('RUNTIME',role,key,status)
+                  if key=='OPENAI_MODEL' and field and 'value' in field:
+                      model=str(field['value'])
+                      if re.fullmatch(r'[A-Za-z0-9_.-]{3,60}',model):
+                          print('RUNTIME grader OPENAI_MODEL_NAME', model)
+                      else:
+                          print('RUNTIME grader OPENAI_MODEL_NAME INVALID_FORMAT')
+              if role=='grader' and 'OPENAI_MODEL' not in env:
+                  print('RUNTIME grader OPENAI_MODEL_NAME CODE_DEFAULT_gpt-6-luna')
+          PY
+          cae="$(az containerapp show -g "$rg" -n "$grader" --query properties.environmentId -o tsv)"
+          ws="$(az containerapp env show --ids "$cae" --query properties.appLogsConfiguration.logAnalyticsConfiguration.customerId -o tsv 2>/dev/null || true)"
+          if [[ "$ws" =~ ^[0-9a-fA-F-]{36}$ ]]; then
+            cat > "$dir/query.kql" <<'KQL'
+          union isfuzzy=true ContainerAppConsoleLogs_CL, ContainerAppConsoleLogs
+          | where TimeGenerated > ago(3d)
+          | extend App=tostring(column_ifexists('ContainerAppName_s',column_ifexists('ContainerAppName','')))
+          | where App in ('ca-cdmstd-api-c26m0911','ca-cdmstd-grader-c26m0911')
+          | extend Msg=tolower(tostring(column_ifexists('Log_s',column_ifexists('Log',''))))
+          | extend Kind=case(
+              Msg contains 'ratings unavailable','RATINGS_PROVIDER_ERROR',
+              Msg contains 'ai feedback skipped because openai_api_key is not configured','AI_KEY_MISSING',
+              Msg contains 'ai feedback generation failed','AI_FEEDBACK_PROVIDER_ERROR',
+              Msg contains 'grader is unavailable','API_GRADER_UNAVAILABLE',
+              Msg contains '[grader]' and Msg contains 'failed','API_GRADER_HTTP_FAILURE',
+              Msg contains 'error grading submission','GRADER_PIPELINE_FAILURE',
+              'OTHER')
+          | where Kind != 'OTHER'
+          | summarize Events=count() by App,Kind
+          KQL
+            if az monitor log-analytics query -w "$ws" --analytics-query "$(cat "$dir/query.kql")" -o json > "$dir/signals.json" 2>"$dir/log-error"; then
+              python3 - "$dir/signals.json" <<'PY'
+          import json,sys
+          try:
+              root=json.load(open(sys.argv[1]))
+              rows=root if isinstance(root,list) else root.get('tables',[])
+              if isinstance(rows,list) and rows and isinstance(rows[0],dict) and 'rows' in rows[0]:
+                  cols=[c['name'] for c in rows[0].get('columns',[])]
+                  rows=[dict(zip(cols,r)) for r in rows[0].get('rows',[])]
+              total=0
+              for row in rows:
+                  if not isinstance(row,dict): continue
+                  app=str(row.get('App',''))
+                  kind=str(row.get('Kind',''))
+                  count=row.get('Events',0)
+                  if app not in ('ca-cdmstd-api-c26m0911','ca-cdmstd-grader-c26m0911'): continue
+                  if kind not in ('RATINGS_PROVIDER_ERROR','AI_KEY_MISSING','AI_FEEDBACK_PROVIDER_ERROR','API_GRADER_UNAVAILABLE','API_GRADER_HTTP_FAILURE','GRADER_PIPELINE_FAILURE'): continue
+                  if not isinstance(count,(int,float)) or count<0: continue
+                  print('LOG_72H', 'api' if 'api' in app else 'grader',kind,'events',int(count))
+                  total+=int(count)
+              print('LOG_72H classified_events',total)
+          except (OSError,ValueError,KeyError,TypeError):
+              print('LOG_72H unreadable_response')
+          PY
+            else
+              echo 'LOG_72H query_unavailable'
+            fi
+          else
+            echo 'LOG_72H analytics_workspace_unavailable'
+          fi
+      - name: Revoke Azure CLI session
+        if: always()
+        run: az logout || true

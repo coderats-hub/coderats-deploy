@@ -1,0 +1,71 @@
+# Validate the approved Check-in V2 frontend change from an immutable private source SHA.
+# Test-only. No Azure login, production change, or deploy happens in this workflow.
+name: Validate Check-in V2 Web (central CI)
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/validate-checkin-v2-web.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  validate:
+    if: github.repository == 'coderats-hub/coderats-deploy' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: migration-target
+    timeout-minutes: 40
+    steps:
+      - name: Confirm read-only source checkout credentials
+        env:
+          APP_ID: ${{ vars.CODERATS_DEPLOY_APP_ID }}
+          APP_KEY: ${{ secrets.CODERATS_DEPLOY_APP_PRIVATE_KEY }}
+        run: |
+          test -n "$APP_ID" && test -n "$APP_KEY"
+      - name: Read-only GitHub App token for Web
+        id: source-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.CODERATS_DEPLOY_APP_ID }}
+          private-key: ${{ secrets.CODERATS_DEPLOY_APP_PRIVATE_KEY }}
+          owner: coderats-hub
+          repositories: web-coderats-base
+          permission-contents: read
+      - name: Checkout exact reviewed private Web commit
+        uses: actions/checkout@v4
+        with:
+          repository: coderats-hub/web-coderats-base
+          ref: 6743f82ea5f38a18c9bf173eda74de9e860a30d5
+          token: ${{ steps.source-token.outputs.token }}
+          persist-credentials: false
+          path: app-src
+      - name: Setup Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Run Web checks privately (unit, websocket, types, build)
+        working-directory: app-src
+        env:
+          NEXT_PUBLIC_API_URL: https://coderats.club
+        run: |
+          set -euo pipefail
+          log_file="${RUNNER_TEMP}/private-web-validation.log"
+          for stage in install test websocket types build; do
+            case "$stage" in
+              install) command=(npm ci --no-audit --no-fund) ;;
+              test) command=(npm test) ;;
+              websocket) command=(npm run test:ws) ;;
+              types) command=(npx --no-install tsc --noEmit) ;;
+              build) command=(npm run build -- --webpack) ;;
+            esac
+            if ! "${command[@]}" >"$log_file" 2>&1; then
+              echo "::error::Private Web validation failed at stage: $stage"
+              exit 1
+            fi
+            echo "Passed stage: $stage"
+          done
+          echo "Private Web validation passed at immutable source SHA"
+      - name: Remove private source and logs
+        if: always()
+        run: |
+          rm -rf app-src
+          rm -f "${RUNNER_TEMP}/private-web-validation.log"

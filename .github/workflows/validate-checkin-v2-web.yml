@@ -1,4 +1,4 @@
-# Validate the approved Check-in V2 frontend change from an immutable private source SHA.
+# Validate the Web scrollbar UI change from an immutable private source SHA.
 # Test-only. No Azure login, production change, or deploy happens in this workflow.
 name: Validate Check-in V2 Web (central CI)
 on:
@@ -34,7 +34,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: coderats-hub/web-coderats-base
-          ref: 8d87ee8f86684f5d9f2667e69357133b7a30393c
+          ref: 1dc9ab8cbe0bf7ca61217a4b4fb32049d0bc90dd
           token: ${{ steps.source-token.outputs.token }}
           persist-credentials: false
           path: app-src

@@ -1,3 +1,4 @@
+# Approved Web-only release: remove Check-in V2 metadata strip; web-coderats-base@develop a645eb535cf114c6e76c9c35d53b5e789d2e149b; central validation 46098093544 succeeded. API/Grader unchanged.
 # Authorized Web-only scrollbar polish release: web-coderats-base@develop 7af7fd823444df27cb1d25c31b56ba69933f8884; central CI 46093106273 passed; API/Grader unchanged.
 # Authorized central Web release following successful validation 46091183581; web-coderats-base@develop 4b553dce0760baa606725ae66c038cdfb169e446 (PR #187).
 # Authorized central Web release following successful validation 46088379682; source develop f61f6d5d361ab7e5eef71bedb78a0cb28aa64cc8.

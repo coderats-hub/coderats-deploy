@@ -34,7 +34,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: coderats-hub/web-coderats-base
-          ref: d3e2b67568685cb2953580bb37bc7e929dab1c80
+          ref: 96f7988b434989add51bd8dae8879bf4e9709929
           token: ${{ steps.source-token.outputs.token }}
           persist-credentials: false
           path: app-src

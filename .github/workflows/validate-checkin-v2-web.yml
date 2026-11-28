@@ -52,12 +52,30 @@ jobs:
           for stage in install test websocket types build; do
             case "$stage" in
               install) command=(npm ci --no-audit --no-fund) ;;
-              test) command=(npm test) ;;
+              test) command=(npm test -- --reporter=json "--outputFile=${RUNNER_TEMP}/private-web-test-report.json") ;;
               websocket) command=(npm run test:ws) ;;
               types) command=(npx --no-install tsc --noEmit) ;;
               build) command=(npm run build -- --webpack) ;;
             esac
             if ! "${command[@]}" >"$log_file" 2>&1; then
+              if [[ "$stage" == test && -s "${RUNNER_TEMP}/private-web-test-report.json" ]]; then
+                python3 - "${RUNNER_TEMP}/private-web-test-report.json" <<'PY'
+          import json, sys
+          try:
+              data = json.load(open(sys.argv[1], encoding='utf-8'))
+              suites = sorted(data.get('testResults', []), key=lambda s: s.get('name', ''))
+              print('Sanitized test outcome: files=', len(suites),
+                    'failed=', data.get('numFailedTests', 'unknown'))
+              for idx, suite in enumerate(suites, 1):
+                  if suite.get('status') != 'failed':
+                      continue
+                  tests = suite.get('assertionResults') or []
+                  failed = [str(n) for n, test in enumerate(tests, 1) if test.get('status') == 'failed']
+                  print('Failed suite ordinal', idx, 'test ordinals', ','.join(failed) or 'unknown')
+          except (OSError, ValueError, TypeError):
+              print('Test reporter parsing failed (no private logs exposed)')
+          PY
+              fi
               echo "::error::Private Web validation failed at stage: $stage"
               exit 1
             fi
@@ -68,4 +86,4 @@ jobs:
         if: always()
         run: |
           rm -rf app-src
-          rm -f "${RUNNER_TEMP}/private-web-validation.log"
+          rm -f "${RUNNER_TEMP}/private-web-validation.log" "${RUNNER_TEMP}/private-web-test-report.json"
